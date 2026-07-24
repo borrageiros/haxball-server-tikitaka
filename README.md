@@ -95,7 +95,7 @@ These rules are enforced automatically by `match/setupMatch.ts`. There is no man
 - Teams always stay balanced: match size is `NvsN` where  
   `N = min(5, floor(connectedPlayers / 2))`.
 - The game starts as soon as there is a **1vs1** (2 players), after a short countdown.
-- An odd player waits as spectator until another player joins; then both enter together (e.g. 3 connected → still 1vs1; 4 connected → 2vs2).
+- An odd player waits as spectator until another player joins; then both enter together (e.g. 3 connected → still 1vs1; 4 connected → 2vs2). They receive a private message explaining they will return when teams can be balanced.
 - Mid-game promotions do **not** stop the match.
 
 ### Kickoff countdown
@@ -110,6 +110,13 @@ These rules are enforced automatically by `match/setupMatch.ts`. There is no man
 - If the room shrinks (disconnect), the **last players who entered** are moved back to spectators until teams are equal again at the new size.
 - After every roster change, teams are **rebalanced** so both sides keep the same number of players.
 - Example: 2vs2 → one disconnect → last entrant leaves the field → back to 1vs1.
+- Whenever a player is moved off the field for roster balance, they get a **private message** with the reason.
+
+### AFK
+
+- During a live (unpaused) match, if an on-field player does not move for **5 seconds**, they are **kicked from the room**.
+- The room announces `{name} ha sido expulsado por inactividad` (or the English equivalent).
+- Leaving triggers the normal roster sync: a waiting spectator enters if available, otherwise the match shrinks and another player may move to spectators with the uneven-roster message.
 
 ### Spectators and 5vs5 cap
 

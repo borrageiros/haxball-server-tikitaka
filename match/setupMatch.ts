@@ -5,6 +5,8 @@ import t from "../utils/i18n";
 import type { Room } from "../commands/types";
 import type { Stadium } from "../utils/loadStadium";
 import {
+  AFK_MOVE_EPSILON,
+  AFK_TIMEOUT_MS,
   MATCH_COUNTDOWN_SECONDS,
   TEAM,
   type MapKey,
@@ -33,6 +35,8 @@ export default function setupMatch(
 
   const connectionQueue: number[] = [];
   const fieldHistory: number[] = [];
+  const lastMovedAt = new Map<number, number>();
+  const lastPos = new Map<number, { x: number; y: number }>();
 
   let currentMap: MapKey = "small";
   let pendingMap: MapKey | null = null;
@@ -82,6 +86,24 @@ export default function setupMatch(
     return fieldHistory.includes(playerId);
   }
 
+  function clearAfkTracking(playerId: number): void {
+    lastMovedAt.delete(playerId);
+    lastPos.delete(playerId);
+  }
+
+  function initAfkTracking(playerId: number): void {
+    lastMovedAt.set(playerId, Date.now());
+    lastPos.delete(playerId);
+  }
+
+  function resetAfkForField(): void {
+    const now = Date.now();
+    for (const playerId of fieldHistory) {
+      lastMovedAt.set(playerId, now);
+      lastPos.delete(playerId);
+    }
+  }
+
   function countTeams(): { red: number; blue: number } {
     let red = 0;
     let blue = 0;
@@ -115,6 +137,7 @@ export default function setupMatch(
     for (const playerId of playerIds) {
       const teamId = pickTeamForPlayer(redCount, blueCount);
       moveToTeam(playerId, teamId);
+      initAfkTracking(playerId);
       if (teamId === TEAM.RED) {
         redCount += 1;
       } else {
@@ -194,6 +217,18 @@ export default function setupMatch(
       }
       room.sendAnnouncement(message, playerId, color, "bold", 2);
     }, 0);
+  }
+
+  function removeFromField(playerId: number): boolean {
+    const fieldIndex = fieldHistory.indexOf(playerId);
+    if (fieldIndex < 0) {
+      return false;
+    }
+    fieldHistory.splice(fieldIndex, 1);
+    clearAfkTracking(playerId);
+    moveToTeam(playerId, TEAM.SPECTATORS);
+    announceTo(playerId, t("match.waitingForPlayers"), 0xffcc00);
+    return true;
   }
 
   function notifyWaitingPlayer(playerId: number): void {
@@ -346,17 +381,28 @@ export default function setupMatch(
     }
   }
 
+  function handleAfk(playerId: number): void {
+    if (!isOnField(playerId) || !room.getPlayer(playerId)) {
+      return;
+    }
+
+    const name = playerName(playerId);
+    const message = t("match.kickedAfk", { name });
+    announce(message, 0xff4444);
+    room.kickPlayer(playerId, message, false);
+  }
+
   function syncRoster(): void {
     const teamSize = desiredTeamSize(connectionQueue.length);
     const desiredCount = teamSize * 2;
 
     while (fieldHistory.length > desiredCount) {
-      const playerId = fieldHistory.pop();
+      const playerId = fieldHistory[fieldHistory.length - 1];
       if (playerId == null) {
         break;
       }
       const name = playerName(playerId);
-      moveToTeam(playerId, TEAM.SPECTATORS);
+      removeFromField(playerId);
       announce(t("match.movedToSpectators", { name }), 0xffaa44);
     }
 
@@ -420,20 +466,75 @@ export default function setupMatch(
       fieldHistory.splice(fieldIndex, 1);
     }
 
+    clearAfkTracking(player.id);
     syncRoster();
+  };
+
+  room.onPlayerInputChange = (playerId) => {
+    if (isOnField(playerId)) {
+      lastMovedAt.set(playerId, Date.now());
+    }
+  };
+
+  room.onGameStart = () => {
+    resetAfkForField();
+  };
+
+  room.onPositionsReset = () => {
+    resetAfkForField();
+    if (!readyForMapChange || !pendingMap || internalAction) {
+      return;
+    }
+    tryApplyPendingMap();
+  };
+
+  room.onGameTick = () => {
+    const gameState = room.gameState;
+    if (!gameState) {
+      return;
+    }
+
+    if (gameState.paused) {
+      resetAfkForField();
+      return;
+    }
+
+    const now = Date.now();
+    const epsilonSq = AFK_MOVE_EPSILON * AFK_MOVE_EPSILON;
+
+    for (const playerId of [...fieldHistory]) {
+      const disc = room.getPlayerDisc(playerId);
+      const pos = disc?.pos;
+      if (!pos) {
+        continue;
+      }
+
+      const prev = lastPos.get(playerId);
+      if (!prev) {
+        lastPos.set(playerId, { x: pos.x, y: pos.y });
+        lastMovedAt.set(playerId, now);
+        continue;
+      }
+
+      const dx = pos.x - prev.x;
+      const dy = pos.y - prev.y;
+      if (dx * dx + dy * dy > epsilonSq) {
+        lastPos.set(playerId, { x: pos.x, y: pos.y });
+        lastMovedAt.set(playerId, now);
+        continue;
+      }
+
+      const movedAt = lastMovedAt.get(playerId) ?? now;
+      if (now - movedAt >= AFK_TIMEOUT_MS) {
+        handleAfk(playerId);
+      }
+    }
   };
 
   room.onTeamGoal = () => {
     if (pendingMap) {
       readyForMapChange = true;
     }
-  };
-
-  room.onPositionsReset = () => {
-    if (!readyForMapChange || !pendingMap || internalAction) {
-      return;
-    }
-    tryApplyPendingMap();
   };
 
   room.onGameEnd = () => {
