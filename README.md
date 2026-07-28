@@ -6,7 +6,8 @@ Headless HaxBall room server built with [node-haxball](https://github.com/wxyz-a
 
 - Configurable room via `.env` (name, password, player limit, geo, maps, etc.)
 - Headless host mode (`NO_PLAYER=true`)
-- Automatic connection queue, equal teams, and spectator overflow
+- Automatic connection queue, balanced teams, and spectator overflow
+- Two fill modes via `FILL_MODE`: wait for even teams (`pairs`) or enter on connect (`instant`)
 - Dynamic small/big map switching on natural pauses (score resets)
 - Chat command system (`!command`)
 - Admin access with `!admin <password>` using `ADMIN_PASSWORD`
@@ -68,7 +69,7 @@ When the room opens, the console prints the room link.
 ├── locales/              # Translation files (es.json, en.json)
 ├── maps/                 # Stadium JSON files
 │   ├── small-map.json    # 3vs3 stadium
-│   └── big-map.json      # 5vs5 stadium
+│   └── big-map.json      # Large stadium (4vs4+)
 ├── .env.example          # Documented environment variables
 └── Dockerfile
 ```
@@ -82,7 +83,7 @@ These rules are enforced automatically by `match/setupMatch.ts`. There is no man
 | Map | File env | Used when |
 | --- | --- | --- |
 | Small (3vs3 stadium) | `SMALL_MAP_FILE` | Match size is **1vs1–3vs3** |
-| Big (5vs5 stadium) | `BIG_MAP_FILE` | Match size is **4vs4–5vs5** |
+| Big (large stadium) | `BIG_MAP_FILE` | Match size is **4vs4 and above** (up to `MAX_TEAM_SIZE`) |
 
 ### Connection queue
 
@@ -90,13 +91,26 @@ These rules are enforced automatically by `match/setupMatch.ts`. There is no man
 - The queue is the source of truth for who has priority to play.
 - Leaving the room removes the player from the queue and from the field history.
 
-### Equal teams and field size
+### Fill modes (`FILL_MODE`)
 
-- Teams always stay balanced: match size is `NvsN` where  
-  `N = min(5, floor(connectedPlayers / 2))`.
+The way players enter the field depends on the `FILL_MODE` variable:
+
+#### `pairs` (default)
+
+- Teams always stay even: match size is `NvsN` where  
+  `N = min(maxTeamSize, floor(connectedPlayers / 2))`.
 - The game starts as soon as there is a **1vs1** (2 players), after a short countdown.
 - An odd player waits as spectator until another player joins; then both enter together (e.g. 3 connected → still 1vs1; 4 connected → 2vs2). They receive a private message explaining they will return when teams can be balanced.
-- Mid-game promotions do **not** stop the match.
+
+#### `instant`
+
+- Players enter the field **as soon as they connect**, up to the per-team cap; no one waits for an even count (e.g. 3 connected → 2vs1).
+- Teams are kept balanced with a difference of **at most one player**, always assigning newcomers to the smaller team.
+- If a team loses players (e.g. two leave blue), the roster is **compensated** by moving players from the bigger team (e.g. one red moves to blue).
+- When both teams are full, extra players wait as spectators and receive a private message; they enter as soon as a spot opens.
+- The game starts as soon as there is at least **1 player** on the field, after a short countdown.
+
+In both modes, mid-game promotions do **not** stop the match.
 
 ### Kickoff countdown
 
@@ -108,7 +122,7 @@ These rules are enforced automatically by `match/setupMatch.ts`. There is no man
 
 - Players who enter the pitch are pushed onto a **field history** stack.
 - If the room shrinks (disconnect), the **last players who entered** are moved back to spectators until teams are equal again at the new size.
-- After every roster change, teams are **rebalanced** so both sides keep the same number of players.
+- After every roster change, teams are **rebalanced**: equal counts in `pairs` mode, difference of at most one in `instant` mode.
 - Example: 2vs2 → one disconnect → last entrant leaves the field → back to 1vs1.
 - Whenever a player is moved off the field for roster balance, they get a **private message** with the reason.
 
@@ -118,11 +132,11 @@ These rules are enforced automatically by `match/setupMatch.ts`. There is no man
 - The room announces `{name} ha sido expulsado por inactividad` (or the English equivalent).
 - Leaving triggers the normal roster sync: a waiting spectator enters if available, otherwise the match shrinks and another player may move to spectators with the uneven-roster message.
 
-### Spectators and 5vs5 cap
+### Spectators and team-size cap
 
-- Maximum on-field size is **5vs5** (10 players).
+- Maximum on-field size is `MAX_TEAM_SIZE` vs `MAX_TEAM_SIZE` (default **6vs6**, 12 players).
 - Extra players stay as spectators, ordered by the connection queue.
-- If the match is full (5vs5) and an on-field player leaves while spectators exist, the **oldest spectator** enters immediately to keep 5vs5 when enough people remain.
+- If the match is full and an on-field player leaves while spectators exist, the **oldest spectator** enters immediately to keep the match at the capped size when enough people remain.
 
 ### Map switching
 
@@ -136,7 +150,7 @@ These rules are enforced automatically by `match/setupMatch.ts`. There is no man
 
 - There is **no pick/choose system**.
 - When a match ends, players still eligible by the connection queue stay on the field.
-- Those players are **randomly reassigned** between red and blue (still equal counts) as soon as the match ends.
+- Those players are **randomly reassigned** between red and blue (still balanced) as soon as the match ends.
 - After the engine finishes the victory pause (~5s) and the game fully stops, a new countdown starts automatically (no player join/leave needed).
 - If a map change is pending at that point, the stadium is applied first and then the countdown runs.
 
@@ -158,6 +172,8 @@ Important variables:
 | `ROOM_NAME` | Room name in the public list |
 | `ADMIN_PASSWORD` | Password for `!admin` |
 | `ROOM_PASSWORD` | Join password (empty = open room) |
+| `MAX_TEAM_SIZE` | Max players per team on the field (default `6`) |
+| `FILL_MODE` | Field fill mode: `pairs` (default) or `instant` |
 | `SMALL_MAP_FILE` | Small stadium file inside `maps/` |
 | `BIG_MAP_FILE` | Big stadium file inside `maps/` |
 | `LANGUAGE` | `es` or `en` |

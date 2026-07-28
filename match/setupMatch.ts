@@ -13,8 +13,8 @@ import {
   type TeamId,
 } from "./constants";
 import {
+  desiredFieldCount,
   desiredMapKey,
-  desiredTeamSize,
   pickTeamForPlayer,
   shuffleInPlace,
 } from "./helpers";
@@ -32,6 +32,9 @@ export default function setupMatch(
     small: loadStadium(utils, config.smallMapFile),
     big: loadStadium(utils, config.bigMapFile),
   };
+
+  const instantFill = config.fillMode === "instant";
+  const minFieldPlayers = instantFill ? 1 : 2;
 
   const connectionQueue: number[] = [];
   const fieldHistory: number[] = [];
@@ -80,6 +83,10 @@ export default function setupMatch(
 
   function playerName(playerId: number): string {
     return room.getPlayer(playerId)?.name ?? String(playerId);
+  }
+
+  function currentDesiredFieldCount(): number {
+    return desiredFieldCount(connectionQueue.length, instantFill);
   }
 
   function isOnField(playerId: number): boolean {
@@ -146,12 +153,7 @@ export default function setupMatch(
     }
   }
 
-  function ensureEqualTeams(): void {
-    const targetPerTeam = fieldHistory.length / 2;
-    if (!Number.isInteger(targetPerTeam)) {
-      return;
-    }
-
+  function balanceTeams(): void {
     const redIds: number[] = [];
     const blueIds: number[] = [];
     const unassigned: number[] = [];
@@ -170,7 +172,17 @@ export default function setupMatch(
       }
     }
 
-    while (redIds.length > targetPerTeam) {
+    for (const playerId of unassigned) {
+      if (redIds.length <= blueIds.length) {
+        redIds.push(playerId);
+        moveToTeam(playerId, TEAM.RED);
+      } else {
+        blueIds.push(playerId);
+        moveToTeam(playerId, TEAM.BLUE);
+      }
+    }
+
+    while (redIds.length - blueIds.length > 1) {
       const playerId = redIds.pop();
       if (playerId == null) {
         break;
@@ -179,23 +191,13 @@ export default function setupMatch(
       moveToTeam(playerId, TEAM.BLUE);
     }
 
-    while (blueIds.length > targetPerTeam) {
+    while (blueIds.length - redIds.length > 1) {
       const playerId = blueIds.pop();
       if (playerId == null) {
         break;
       }
       redIds.push(playerId);
       moveToTeam(playerId, TEAM.RED);
-    }
-
-    for (const playerId of unassigned) {
-      if (redIds.length < targetPerTeam) {
-        redIds.push(playerId);
-        moveToTeam(playerId, TEAM.RED);
-      } else {
-        blueIds.push(playerId);
-        moveToTeam(playerId, TEAM.BLUE);
-      }
     }
   }
 
@@ -219,6 +221,10 @@ export default function setupMatch(
     }, 0);
   }
 
+  function waitingMessage(): string {
+    return instantFill ? t("match.teamsFull") : t("match.waitingForPlayers");
+  }
+
   function removeFromField(playerId: number): boolean {
     const fieldIndex = fieldHistory.indexOf(playerId);
     if (fieldIndex < 0) {
@@ -227,7 +233,7 @@ export default function setupMatch(
     fieldHistory.splice(fieldIndex, 1);
     clearAfkTracking(playerId);
     moveToTeam(playerId, TEAM.SPECTATORS);
-    announceTo(playerId, t("match.waitingForPlayers"), 0xffcc00);
+    announceTo(playerId, waitingMessage(), 0xffcc00);
     return true;
   }
 
@@ -235,7 +241,7 @@ export default function setupMatch(
     if (isOnField(playerId)) {
       return;
     }
-    announceTo(playerId, t("match.waitingForPlayers"), 0xffcc00);
+    announceTo(playerId, waitingMessage(), 0xffcc00);
   }
 
   function mapLabel(mapKey: MapKey): string {
@@ -251,7 +257,7 @@ export default function setupMatch(
 
   function canStartMatch(): boolean {
     return (
-      desiredTeamSize(connectionQueue.length) >= 1 &&
+      currentDesiredFieldCount() >= minFieldPlayers &&
       room.gameState == null &&
       !internalAction
     );
@@ -303,7 +309,7 @@ export default function setupMatch(
 
     const wasRunning = room.gameState != null;
     const shouldRestart =
-      wasRunning || desiredTeamSize(connectionQueue.length) >= 1;
+      wasRunning || currentDesiredFieldCount() >= minFieldPlayers;
 
     clearCountdown();
     internalAction = true;
@@ -327,7 +333,7 @@ export default function setupMatch(
   }
 
   function syncPendingMap(): void {
-    const teamSize = desiredTeamSize(connectionQueue.length);
+    const teamSize = Math.ceil(currentDesiredFieldCount() / 2);
     const target = desiredMapKey(teamSize);
 
     if (target === currentMap) {
@@ -363,10 +369,9 @@ export default function setupMatch(
   }
 
   function ensureGameState(): void {
-    const teamSize = desiredTeamSize(connectionQueue.length);
     const gameActive = room.gameState != null;
 
-    if (teamSize < 1) {
+    if (currentDesiredFieldCount() < minFieldPlayers) {
       clearCountdown();
       if (gameActive && !internalAction) {
         internalAction = true;
@@ -393,8 +398,7 @@ export default function setupMatch(
   }
 
   function syncRoster(): void {
-    const teamSize = desiredTeamSize(connectionQueue.length);
-    const desiredCount = teamSize * 2;
+    const desiredCount = currentDesiredFieldCount();
 
     while (fieldHistory.length > desiredCount) {
       const playerId = fieldHistory[fieldHistory.length - 1];
@@ -420,20 +424,6 @@ export default function setupMatch(
 
     if (newcomers.length > 0) {
       assignPlayers(newcomers);
-      if (newcomers.length === 1) {
-        announce(
-          t("match.playerEntered", { name: playerName(newcomers[0]!) }),
-          0x44ff44
-        );
-      } else {
-        announce(
-          t("match.playersEntered", {
-            count: String(newcomers.length),
-            size: String(teamSize),
-          }),
-          0x44ff44
-        );
-      }
     }
 
     for (const playerId of connectionQueue) {
@@ -442,7 +432,25 @@ export default function setupMatch(
       }
     }
 
-    ensureEqualTeams();
+    balanceTeams();
+
+    if (newcomers.length === 1) {
+      announce(
+        t("match.playerEntered", { name: playerName(newcomers[0]!) }),
+        0x44ff44
+      );
+    } else if (newcomers.length > 1) {
+      const { red, blue } = countTeams();
+      announce(
+        t("match.playersEntered", {
+          count: String(newcomers.length),
+          red: String(red),
+          blue: String(blue),
+        }),
+        0x44ff44
+      );
+    }
+
     syncPendingMap();
     ensureGameState();
   }

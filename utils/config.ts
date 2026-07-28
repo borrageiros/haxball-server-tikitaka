@@ -25,6 +25,12 @@ function toNumber(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+export type FillMode = "pairs" | "instant";
+
+function toFillMode(value: string | undefined): FillMode {
+  return (value || "").trim().toLowerCase() === "instant" ? "instant" : "pairs";
+}
+
 export interface GeoConfig {
   lat: number;
   lon: number;
@@ -36,6 +42,8 @@ export interface Config {
   adminPassword: string;
   roomPassword: string | undefined;
   maxPlayers: number;
+  maxTeamSize: number;
+  fillMode: FillMode;
   showInRoomList: boolean;
   noPlayer: boolean;
   hostName: string;
@@ -55,6 +63,8 @@ const config: Config = {
   adminPassword: process.env.ADMIN_PASSWORD || "admin",
   roomPassword: (process.env.ROOM_PASSWORD || "").trim() || undefined,
   maxPlayers: toNumber(process.env.MAX_PLAYERS, 16),
+  maxTeamSize: Math.max(1, toNumber(process.env.MAX_TEAM_SIZE, 6)),
+  fillMode: toFillMode(process.env.FILL_MODE),
   showInRoomList: toBool(process.env.SHOW_IN_ROOM_LIST, true),
   noPlayer: toBool(process.env.NO_PLAYER, true),
   hostName: process.env.HOST_NAME || "Tikitaka",

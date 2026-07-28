@@ -1,8 +1,19 @@
 import type { MapKey, TeamId } from "./constants";
-import { BIG_MAP_MIN_TEAM_SIZE, MAX_TEAM_SIZE, TEAM } from "./constants";
+import { BIG_MAP_MIN_TEAM_SIZE, TEAM } from "./constants";
+import config from "../utils/config";
 
 export function desiredTeamSize(connectedCount: number): number {
-  return Math.min(MAX_TEAM_SIZE, Math.floor(connectedCount / 2));
+  return Math.min(config.maxTeamSize, Math.floor(connectedCount / 2));
+}
+
+export function desiredFieldCount(
+  connectedCount: number,
+  instantFill: boolean
+): number {
+  if (instantFill) {
+    return Math.min(connectedCount, config.maxTeamSize * 2);
+  }
+  return desiredTeamSize(connectedCount) * 2;
 }
 
 export function desiredMapKey(teamSize: number): MapKey {
