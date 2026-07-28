@@ -8,7 +8,6 @@ export type TeamId = (typeof TEAM)[keyof typeof TEAM];
 
 export const BIG_MAP_MIN_TEAM_SIZE = 4;
 export const MATCH_COUNTDOWN_SECONDS = 3;
-export const AFK_TIMEOUT_MS = 5000;
 export const AFK_MOVE_EPSILON = 0.05;
 
 export type MapKey = "small" | "big";

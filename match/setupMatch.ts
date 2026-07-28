@@ -6,7 +6,6 @@ import type { Room } from "../commands/types";
 import type { Stadium } from "../utils/loadStadium";
 import {
   AFK_MOVE_EPSILON,
-  AFK_TIMEOUT_MS,
   MATCH_COUNTDOWN_SECONDS,
   TEAM,
   type MapKey,
@@ -38,8 +37,9 @@ export default function setupMatch(
 
   const connectionQueue: number[] = [];
   const fieldHistory: number[] = [];
-  const lastMovedAt = new Map<number, number>();
+  const lastActiveAt = new Map<number, number>();
   const lastPos = new Map<number, { x: number; y: number }>();
+  const afkWarnedSec = new Map<number, number>();
 
   let currentMap: MapKey = "small";
   let pendingMap: MapKey | null = null;
@@ -94,20 +94,31 @@ export default function setupMatch(
   }
 
   function clearAfkTracking(playerId: number): void {
-    lastMovedAt.delete(playerId);
+    lastActiveAt.delete(playerId);
     lastPos.delete(playerId);
+    afkWarnedSec.delete(playerId);
   }
 
   function initAfkTracking(playerId: number): void {
-    lastMovedAt.set(playerId, Date.now());
+    lastActiveAt.set(playerId, Date.now());
     lastPos.delete(playerId);
+    afkWarnedSec.delete(playerId);
+  }
+
+  function touchAfk(playerId: number): void {
+    if (!isOnField(playerId)) {
+      return;
+    }
+    lastActiveAt.set(playerId, Date.now());
+    afkWarnedSec.delete(playerId);
   }
 
   function resetAfkForField(): void {
     const now = Date.now();
     for (const playerId of fieldHistory) {
-      lastMovedAt.set(playerId, now);
+      lastActiveAt.set(playerId, now);
       lastPos.delete(playerId);
+      afkWarnedSec.delete(playerId);
     }
   }
 
@@ -212,12 +223,17 @@ export default function setupMatch(
     room.sendAnnouncement(message, null, color, "bold", 1);
   }
 
-  function announceTo(playerId: number, message: string, color: number): void {
+  function announceTo(
+    playerId: number,
+    message: string,
+    color: number,
+    sound = 2
+  ): void {
     setTimeout(() => {
       if (!room.getPlayer(playerId)) {
         return;
       }
-      room.sendAnnouncement(message, playerId, color, "bold", 2);
+      room.sendAnnouncement(message, playerId, color, "bold", sound);
     }, 0);
   }
 
@@ -333,7 +349,7 @@ export default function setupMatch(
   }
 
   function syncPendingMap(): void {
-    const teamSize = Math.ceil(currentDesiredFieldCount() / 2);
+    const teamSize = Math.floor(currentDesiredFieldCount() / 2);
     const target = desiredMapKey(teamSize);
 
     if (target === currentMap) {
@@ -479,8 +495,16 @@ export default function setupMatch(
   };
 
   room.onPlayerInputChange = (playerId) => {
-    if (isOnField(playerId)) {
-      lastMovedAt.set(playerId, Date.now());
+    touchAfk(playerId);
+  };
+
+  room.onPlayerChat = (playerId) => {
+    touchAfk(playerId);
+  };
+
+  room.onPlayerChatIndicatorChange = (playerId, typing) => {
+    if (typing) {
+      touchAfk(playerId);
     }
   };
 
@@ -509,6 +533,7 @@ export default function setupMatch(
 
     const now = Date.now();
     const epsilonSq = AFK_MOVE_EPSILON * AFK_MOVE_EPSILON;
+    const warningAtMs = config.afkTimeoutMs / 2;
 
     for (const playerId of [...fieldHistory]) {
       const disc = room.getPlayerDisc(playerId);
@@ -520,7 +545,8 @@ export default function setupMatch(
       const prev = lastPos.get(playerId);
       if (!prev) {
         lastPos.set(playerId, { x: pos.x, y: pos.y });
-        lastMovedAt.set(playerId, now);
+        lastActiveAt.set(playerId, now);
+        afkWarnedSec.delete(playerId);
         continue;
       }
 
@@ -528,14 +554,38 @@ export default function setupMatch(
       const dy = pos.y - prev.y;
       if (dx * dx + dy * dy > epsilonSq) {
         lastPos.set(playerId, { x: pos.x, y: pos.y });
-        lastMovedAt.set(playerId, now);
+        lastActiveAt.set(playerId, now);
+        afkWarnedSec.delete(playerId);
         continue;
       }
 
-      const movedAt = lastMovedAt.get(playerId) ?? now;
-      if (now - movedAt >= AFK_TIMEOUT_MS) {
+      const activeAt = lastActiveAt.get(playerId) ?? now;
+      const idleMs = now - activeAt;
+
+      if (idleMs >= config.afkTimeoutMs) {
         handleAfk(playerId);
+        continue;
       }
+
+      if (idleMs < warningAtMs) {
+        afkWarnedSec.delete(playerId);
+        continue;
+      }
+
+      const remainingSec = Math.max(
+        1,
+        Math.ceil((config.afkTimeoutMs - idleMs) / 1000)
+      );
+      if (afkWarnedSec.get(playerId) === remainingSec) {
+        continue;
+      }
+      afkWarnedSec.set(playerId, remainingSec);
+      announceTo(
+        playerId,
+        t("match.afkWarning", { seconds: String(remainingSec) }),
+        0xffaa00,
+        1
+      );
     }
   };
 

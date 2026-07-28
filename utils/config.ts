@@ -28,7 +28,7 @@ function toNumber(value: string | undefined, fallback: number): number {
 export type FillMode = "pairs" | "instant";
 
 function toFillMode(value: string | undefined): FillMode {
-  return (value || "").trim().toLowerCase() === "instant" ? "instant" : "pairs";
+  return (value || "").trim().toLowerCase() === "pairs" ? "pairs" : "instant";
 }
 
 export interface GeoConfig {
@@ -44,6 +44,7 @@ export interface Config {
   maxPlayers: number;
   maxTeamSize: number;
   fillMode: FillMode;
+  afkTimeoutMs: number;
   showInRoomList: boolean;
   noPlayer: boolean;
   hostName: string;
@@ -65,6 +66,7 @@ const config: Config = {
   maxPlayers: toNumber(process.env.MAX_PLAYERS, 16),
   maxTeamSize: Math.max(1, toNumber(process.env.MAX_TEAM_SIZE, 6)),
   fillMode: toFillMode(process.env.FILL_MODE),
+  afkTimeoutMs: Math.max(1, toNumber(process.env.AFK_TIMEOUT_MS, 10000)),
   showInRoomList: toBool(process.env.SHOW_IN_ROOM_LIST, true),
   noPlayer: toBool(process.env.NO_PLAYER, true),
   hostName: process.env.HOST_NAME || "Tikitaka",

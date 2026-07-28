@@ -95,20 +95,20 @@ These rules are enforced automatically by `match/setupMatch.ts`. There is no man
 
 The way players enter the field depends on the `FILL_MODE` variable:
 
-#### `pairs` (default)
-
-- Teams always stay even: match size is `NvsN` where  
-  `N = min(maxTeamSize, floor(connectedPlayers / 2))`.
-- The game starts as soon as there is a **1vs1** (2 players), after a short countdown.
-- An odd player waits as spectator until another player joins; then both enter together (e.g. 3 connected → still 1vs1; 4 connected → 2vs2). They receive a private message explaining they will return when teams can be balanced.
-
-#### `instant`
+#### `instant` (default)
 
 - Players enter the field **as soon as they connect**, up to the per-team cap; no one waits for an even count (e.g. 3 connected → 2vs1).
 - Teams are kept balanced with a difference of **at most one player**, always assigning newcomers to the smaller team.
 - If a team loses players (e.g. two leave blue), the roster is **compensated** by moving players from the bigger team (e.g. one red moves to blue).
 - When both teams are full, extra players wait as spectators and receive a private message; they enter as soon as a spot opens.
 - The game starts as soon as there is at least **1 player** on the field, after a short countdown.
+
+#### `pairs`
+
+- Teams always stay even: match size is `NvsN` where  
+  `N = min(maxTeamSize, floor(connectedPlayers / 2))`.
+- The game starts as soon as there is a **1vs1** (2 players), after a short countdown.
+- An odd player waits as spectator until another player joins; then both enter together (e.g. 3 connected → still 1vs1; 4 connected → 2vs2). They receive a private message explaining they will return when teams can be balanced.
 
 In both modes, mid-game promotions do **not** stop the match.
 
@@ -128,8 +128,10 @@ In both modes, mid-game promotions do **not** stop the match.
 
 ### AFK
 
-- During a live (unpaused) match, if an on-field player does not move for **5 seconds**, they are **kicked from the room**.
-- The room announces `{name} ha sido expulsado por inactividad` (or the English equivalent).
+- During a live (unpaused) match, if an on-field player shows no activity for `AFK_TIMEOUT_MS` (default **10000** ms), they are **kicked from the room**.
+- Activity includes movement, keyboard/input changes, typing (chat indicator), and sending chat messages.
+- At **half** of that timeout, the player receives a **private countdown** warning (only they see it), updated each second until kick or activity.
+- The room announces `{name} ha sido expulsado por inactividad` (or the English equivalent) when the kick happens.
 - Leaving triggers the normal roster sync: a waiting spectator enters if available, otherwise the match shrinks and another player may move to spectators with the uneven-roster message.
 
 ### Spectators and team-size cap
@@ -140,8 +142,8 @@ In both modes, mid-game promotions do **not** stop the match.
 
 ### Map switching
 
-- At **8 connected players** (4vs4), the room targets the **big** map.
-- When the match size returns to **3vs3 or below**, it targets the **small** map.
+- Only when **both** teams would have at least **4** players (true **4vs4**, i.e. **8** on the field), the room targets the **big** map. A **4vs3** stays on the small map.
+- When the smaller team drops to **3 or below** (3vs3 or uneven sizes like 4vs3), it targets the **small** map.
 - If a game is in progress, the stadium change is **queued** and applied on the next **natural pause** (after a goal, on positions reset). There is no forced mid-play freeze.
 - After the stadium swap the **score resets** (new kickoff on the new map).
 - If no game is running, the map changes immediately.
@@ -173,7 +175,8 @@ Important variables:
 | `ADMIN_PASSWORD` | Password for `!admin` |
 | `ROOM_PASSWORD` | Join password (empty = open room) |
 | `MAX_TEAM_SIZE` | Max players per team on the field (default `6`) |
-| `FILL_MODE` | Field fill mode: `pairs` (default) or `instant` |
+| `AFK_TIMEOUT_MS` | Ms without activity (move/input/typing) before AFK kick (default `10000`) |
+| `FILL_MODE` | Field fill mode: `instant` (default) or `pairs` |
 | `SMALL_MAP_FILE` | Small stadium file inside `maps/` |
 | `BIG_MAP_FILE` | Big stadium file inside `maps/` |
 | `LANGUAGE` | `es` or `en` |
