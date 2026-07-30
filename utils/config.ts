@@ -1,5 +1,9 @@
 import path from "path";
 import dotenv from "dotenv";
+import {
+  DEFAULT_MAP_SWITCH_TO_BIG_PLAYERS,
+  DEFAULT_MAP_SWITCH_TO_SMALL_MAX_PLAYERS,
+} from "../match/constants";
 
 const rootDir = process.cwd();
 
@@ -40,9 +44,12 @@ export interface GeoConfig {
 export interface Config {
   roomName: string;
   adminPassword: string;
+  subAdminPassword: string;
   roomPassword: string | undefined;
   maxPlayers: number;
   maxTeamSize: number;
+  mapSwitchToBigPlayers: number;
+  mapSwitchToSmallMaxPlayers: number;
   fillMode: FillMode;
   afkTimeoutMs: number;
   showInRoomList: boolean;
@@ -62,9 +69,21 @@ export interface Config {
 const config: Config = {
   roomName: process.env.ROOM_NAME || "Tikitaka",
   adminPassword: process.env.ADMIN_PASSWORD || "admin",
+  subAdminPassword: process.env.SUBADMIN_PASSWORD || "subadmin",
   roomPassword: (process.env.ROOM_PASSWORD || "").trim() || undefined,
   maxPlayers: toNumber(process.env.MAX_PLAYERS, 16),
   maxTeamSize: Math.max(1, toNumber(process.env.MAX_TEAM_SIZE, 6)),
+  mapSwitchToBigPlayers: Math.max(
+    1,
+    toNumber(process.env.MAP_SWITCH_TO_BIG_PLAYERS, DEFAULT_MAP_SWITCH_TO_BIG_PLAYERS)
+  ),
+  mapSwitchToSmallMaxPlayers: Math.max(
+    0,
+    toNumber(
+      process.env.MAP_SWITCH_TO_SMALL_MAX_PLAYERS,
+      DEFAULT_MAP_SWITCH_TO_SMALL_MAX_PLAYERS
+    )
+  ),
   fillMode: toFillMode(process.env.FILL_MODE),
   afkTimeoutMs: Math.max(1, toNumber(process.env.AFK_TIMEOUT_MS, 10000)),
   showInRoomList: toBool(process.env.SHOW_IN_ROOM_LIST, true),

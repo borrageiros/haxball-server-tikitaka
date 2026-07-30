@@ -6,7 +6,14 @@ export const TEAM = {
 
 export type TeamId = (typeof TEAM)[keyof typeof TEAM];
 
-export const BIG_MAP_MIN_TEAM_SIZE = 4;
+export const TEAM_CHAT_COLOR: Record<TeamId, number> = {
+  [TEAM.SPECTATORS]: 0xffffff,
+  [TEAM.RED]: 0xe56e56,
+  [TEAM.BLUE]: 0x5689e5,
+};
+
+export const DEFAULT_MAP_SWITCH_TO_BIG_PLAYERS = 8;
+export const DEFAULT_MAP_SWITCH_TO_SMALL_MAX_PLAYERS = 6;
 export const MATCH_COUNTDOWN_SECONDS = 3;
 export const AFK_MOVE_EPSILON = 0.05;
 

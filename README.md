@@ -10,7 +10,13 @@ Headless HaxBall room server built with [node-haxball](https://github.com/wxyz-a
 - Two fill modes via `FILL_MODE`: wait for even teams (`pairs`) or enter on connect (`instant`)
 - Dynamic small/big map switching on natural pauses (score resets)
 - Chat command system (`!command`)
+- Player chat shown in team colors (red / blue / white for spectators)
 - Admin access with `!admin <password>` using `ADMIN_PASSWORD`
+- Hidden sub-admin access with `!subadmin <password>` using `SUBADMIN_PASSWORD` (no visible room admin)
+- Moderation commands `!kick` and `!mute` for room admins and sub-admins
+- Voluntary AFK with `!afk` (hold queue spot as spectator without playing)
+- Queue position with `!queue` and automatic private notifications when the position changes
+- Command list with `!help` (private message)
 - Localization (`es` / `en`) driven by `LANGUAGE`
 - Docker-ready production image
 
@@ -31,6 +37,7 @@ Edit `.env` and set at least:
 
 - `TOKEN` or `HAXBALL_TOKEN` (or leave empty to paste it at startup)
 - `ADMIN_PASSWORD`
+- `SUBADMIN_PASSWORD`
 - `LANGUAGE` (`es` by default)
 
 Run in development:
@@ -56,10 +63,19 @@ When the room opens, the console prints the room link.
 ├── commands/             # Chat commands (one file per command)
 │   ├── index.ts          # Command registry and dispatcher
 │   ├── types.ts          # Shared command types
-│   └── admin.ts          # !admin
+│   ├── moderation.ts     # Shared kick/mute permission helpers
+│   ├── help.ts           # !help
+│   ├── afk.ts            # !afk
+│   ├── queue.ts          # !queue
+│   ├── admin.ts          # !admin
+│   ├── subadmin.ts       # !subadmin (hidden)
+│   ├── kick.ts           # !kick
+│   └── mute.ts           # !mute
 ├── match/                # Matchmaking, teams, and map switching
 │   ├── constants.ts      # Team ids, max size, map thresholds
 │   ├── helpers.ts        # Pure match helpers
+│   ├── types.ts          # Queue entry and match types
+│   ├── controls.ts       # Match API bridge for commands
 │   └── setupMatch.ts     # Queue, roster sync, map/score logic
 ├── utils/
 │   ├── config.ts         # Loads .env.example then .env
@@ -82,14 +98,27 @@ These rules are enforced automatically by `match/setupMatch.ts`. There is no man
 
 | Map | File env | Used when |
 | --- | --- | --- |
-| Small (3vs3 stadium) | `SMALL_MAP_FILE` | Match size is **1vs1–3vs3** |
-| Big (large stadium) | `BIG_MAP_FILE` | Match size is **4vs4 and above** (up to `MAX_TEAM_SIZE`) |
+| Small (3vs3 stadium) | `SMALL_MAP_FILE` | Total on-field players are `<= MAP_SWITCH_TO_SMALL_MAX_PLAYERS` (default: 6) |
+| Big (large stadium) | `BIG_MAP_FILE` | Total on-field players are `>= MAP_SWITCH_TO_BIG_PLAYERS` (default: 8) |
 
 ### Connection queue
 
 - Every join is appended to a **connection queue** (oldest first).
+- Each queue entry is an object `{ id, name, afk, admin }`:
+  - `id` — player id
+  - `name` — player display name at join time
+  - `afk` — voluntary AFK flag (`!afk`); distinct from the inactivity kick
+  - `admin` — sub-admin flag (`!subadmin`); grants `!kick` / `!mute` without visible room admin
 - The queue is the source of truth for who has priority to play.
+- Field size is computed from **non-AFK** players only (AFK players keep their place but do not count toward fill).
 - Leaving the room removes the player from the queue and from the field history.
+
+### Visible queue position
+
+- The **visible queue** contains only the players actually waiting: connected, non-AFK, and not on the field. For example, with `MAX_TEAM_SIZE=6` and 14 players connected, 12 are on the field and the 2 waiting spectators hold visible positions 1 and 2.
+- When a player starts waiting (teams full or uneven roster), they receive a **private message** with the waiting reason followed by their visible queue position.
+- Whenever their position changes (someone leaves, is kicked, or the queue advances), they receive a private message with the updated position.
+- `!queue` returns the current position at any time (see [Commands](#commands)).
 
 ### Fill modes (`FILL_MODE`)
 
@@ -128,11 +157,25 @@ In both modes, mid-game promotions do **not** stop the match.
 
 ### AFK
 
+There are two separate AFK behaviours:
+
+#### Inactivity kick (automatic)
+
 - During a live (unpaused) match, if an on-field player shows no activity for `AFK_TIMEOUT_MS` (default **10000** ms), they are **kicked from the room**.
 - Activity includes movement, keyboard/input changes, typing (chat indicator), and sending chat messages.
 - At **half** of that timeout, the player receives a **private countdown** warning (only they see it), updated each second until kick or activity.
 - The room announces `{name} ha sido expulsado por inactividad` (or the English equivalent) when the kick happens.
+- This kick does **not** set the voluntary AFK flag; the player is removed from the room entirely.
 - Leaving triggers the normal roster sync: a waiting spectator enters if available, otherwise the match shrinks and another player may move to spectators with the uneven-roster message.
+
+#### Voluntary AFK (`!afk`)
+
+- Toggled only by the `!afk` command (not by the inactivity kick).
+- Sets `afk: true` on the player's queue entry and keeps their position in the connection queue.
+- If they are on the field, they are moved to spectators immediately; their spot can be filled by the next eligible (non-AFK) player in queue order.
+- While AFK they are never promoted onto the field, even if there is a free spot.
+- `!afk` again clears the flag; they become eligible again and enter when their turn and a spot allow it.
+- Confirmation is sent as a **private** message to the player.
 
 ### Spectators and team-size cap
 
@@ -142,8 +185,10 @@ In both modes, mid-game promotions do **not** stop the match.
 
 ### Map switching
 
-- Only when **both** teams would have at least **4** players (true **4vs4**, i.e. **8** on the field), the room targets the **big** map. A **4vs3** stays on the small map.
-- When the smaller team drops to **3 or below** (3vs3 or uneven sizes like 4vs3), it targets the **small** map.
+- The map target is computed from the **total on-field players**.
+- The room targets the **big** map only at `MAP_SWITCH_TO_BIG_PLAYERS` or above (default `8`, true **4vs4**).
+- The room targets the **small** map at `MAP_SWITCH_TO_SMALL_MAX_PLAYERS` or below (default `6`).
+- With default thresholds, **7 players (4vs3)** stay on the **small** map.
 - If a game is in progress, the stadium change is **queued** and applied on the next **natural pause** (after a goal, on positions reset). There is no forced mid-play freeze.
 - After the stadium swap the **score resets** (new kickoff on the new map).
 - If no game is running, the map changes immediately.
@@ -173,8 +218,11 @@ Important variables:
 | --- | --- |
 | `ROOM_NAME` | Room name in the public list |
 | `ADMIN_PASSWORD` | Password for `!admin` |
+| `SUBADMIN_PASSWORD` | Password for hidden `!subadmin` |
 | `ROOM_PASSWORD` | Join password (empty = open room) |
 | `MAX_TEAM_SIZE` | Max players per team on the field (default `6`) |
+| `MAP_SWITCH_TO_BIG_PLAYERS` | Total on-field players required to switch to big map (default `8`) |
+| `MAP_SWITCH_TO_SMALL_MAX_PLAYERS` | Max total on-field players to use small map (default `6`) |
 | `AFK_TIMEOUT_MS` | Ms without activity (move/input/typing) before AFK kick (default `10000`) |
 | `FILL_MODE` | Field fill mode: `instant` (default) or `pairs` |
 | `SMALL_MAP_FILE` | Small stadium file inside `maps/` |
@@ -185,11 +233,24 @@ Important variables:
 
 ## Commands
 
-Chat messages starting with `!` are treated as commands and are not shown in public chat.
+Public chat is rebroadcast as announcements colored by the sender's team (red, blue, or white for spectators). Messages starting with `!` are treated as commands and are not shown in public chat.
 
 | Command | Description |
 | --- | --- |
+| `!help` | Private list of available commands |
+| `!afk` | Toggle voluntary AFK (spectator, keep queue spot, skip field) |
+| `!queue` | Private message with your visible queue position (or a notice if you are on the field or AFK) |
 | `!admin <password>` | Grants room admin if the password matches `ADMIN_PASSWORD` |
+| `!kick <id or name>` | Kicks a player (room admins and sub-admins). Not listed in `!help` |
+| `!mute <id or name>` | Toggles chat mute for a player (room admins and sub-admins). Not listed in `!help` |
+
+### Hidden commands
+
+These are registered but intentionally omitted from `!help`:
+
+| Command | Description |
+| --- | --- |
+| `!subadmin <password>` | Grants sub-admin (`admin: true` on the queue entry) if the password matches `SUBADMIN_PASSWORD`. Does **not** call `setPlayerAdmin`, so the player is not a visible room admin. Unlocks `!kick` and `!mute`. |
 
 ### Adding a new command
 

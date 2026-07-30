@@ -1,12 +1,35 @@
 import type { ChatCustomData, Command, OperationTypeEnum, Room } from "./types";
 import adminCommand from "./admin";
+import afkCommand from "./afk";
+import helpCommand from "./help";
+import kickCommand from "./kick";
+import muteCommand from "./mute";
+import queueCommand from "./queue";
+import subadminCommand from "./subadmin";
+import { getMatchControls } from "../match/controls";
+import { TEAM, TEAM_CHAT_COLOR, type TeamId } from "../match/constants";
 import t from "../utils/i18n";
 
-const commandList: Command[] = [adminCommand];
+const commandList: Command[] = [
+  helpCommand,
+  afkCommand,
+  queueCommand,
+  adminCommand,
+  subadminCommand,
+  kickCommand,
+  muteCommand,
+];
 
 const commands = new Map(
   commandList.map((command) => [command.name.toLowerCase(), command])
 );
+
+function chatColorForTeam(teamId: number): number {
+  if (teamId === TEAM.RED || teamId === TEAM.BLUE || teamId === TEAM.SPECTATORS) {
+    return TEAM_CHAT_COLOR[teamId as TeamId];
+  }
+  return TEAM_CHAT_COLOR[TEAM.SPECTATORS];
+}
 
 export default function setupCommands(
   room: Room,
@@ -40,35 +63,53 @@ export default function setupCommands(
     }
 
     const data = customData as ChatCustomData | undefined;
-    if (!data?.isCommand || !data.data?.length) {
-      return true;
-    }
-
-    const [rawName, ...args] = data.data;
-    const name = rawName.slice(1).toLowerCase();
-    const command = commands.get(name);
     const playerId = (msg as unknown as { byId: number }).byId;
+    const text = (msg as unknown as { text: string }).text;
 
-    if (!command) {
-      room.sendAnnouncement(
-        t("command.unknown", { command: rawName }),
-        playerId,
-        0xffcc00,
-        "bold",
-        1
-      );
+    if (data?.isCommand && data.data?.length) {
+      const [rawName, ...args] = data.data;
+      const name = rawName.slice(1).toLowerCase();
+      const command = commands.get(name);
+
+      if (!command) {
+        room.sendAnnouncement(
+          t("command.unknown", { command: rawName }),
+          playerId,
+          0xffcc00,
+          "bold",
+          1
+        );
+        return true;
+      }
+
+      command.execute({ room, playerId, args });
       return true;
     }
 
-    command.execute({ room, playerId, args });
+    if (getMatchControls().isMuted(playerId)) {
+      room.sendAnnouncement(t("mute.blocked"), playerId, 0xffcc00, "bold", 1);
+      return true;
+    }
+
+    const player = room.getPlayer(playerId);
+    const name = player?.name ?? String(playerId);
+    const teamId = player?.team.id ?? TEAM.SPECTATORS;
+
+    room.sendAnnouncement(
+      `${name}: ${text}`,
+      null,
+      chatColorForTeam(teamId),
+      "normal",
+      1
+    );
     return true;
   };
 
-  room.onAfterOperationReceived = (type, _msg, _globalFrameNo, _clientFrameNo, customData) => {
+  room.onAfterOperationReceived = (type) => {
     if (type !== OperationType.SendChat) {
       return true;
     }
 
-    return !(customData as ChatCustomData | undefined)?.isCommand;
+    return false;
   };
 }

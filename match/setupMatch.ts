@@ -17,6 +17,8 @@ import {
   pickTeamForPlayer,
   shuffleInPlace,
 } from "./helpers";
+import { bindMatchControls } from "./controls";
+import type { QueueEntry, QueueStatus } from "./types";
 
 type HaxballAPI = ReturnType<typeof createHaxball>;
 type HaxballUtils = HaxballAPI["Utils"];
@@ -35,11 +37,13 @@ export default function setupMatch(
   const instantFill = config.fillMode === "instant";
   const minFieldPlayers = instantFill ? 1 : 2;
 
-  const connectionQueue: number[] = [];
+  const connectionQueue: QueueEntry[] = [];
   const fieldHistory: number[] = [];
+  const mutedPlayers = new Set<number>();
   const lastActiveAt = new Map<number, number>();
   const lastPos = new Map<number, { x: number; y: number }>();
   const afkWarnedSec = new Map<number, number>();
+  const lastQueuePosition = new Map<number, number>();
 
   let currentMap: MapKey = "small";
   let pendingMap: MapKey | null = null;
@@ -68,6 +72,10 @@ export default function setupMatch(
       return false;
     }
 
+    if (type === OperationType.SendChat && byId != null) {
+      touchAfk(byId);
+    }
+
     if (previousOnOperationReceived) {
       return previousOnOperationReceived(
         type,
@@ -82,11 +90,46 @@ export default function setupMatch(
   };
 
   function playerName(playerId: number): string {
-    return room.getPlayer(playerId)?.name ?? String(playerId);
+    return (
+      room.getPlayer(playerId)?.name ??
+      findQueueEntry(playerId)?.name ??
+      String(playerId)
+    );
+  }
+
+  function findQueueEntry(playerId: number): QueueEntry | undefined {
+    return connectionQueue.find((entry) => entry.id === playerId);
+  }
+
+  function waitingQueueIds(): number[] {
+    return connectionQueue
+      .filter((entry) => !entry.afk && !isOnField(entry.id))
+      .map((entry) => entry.id);
+  }
+
+  function queuePosition(playerId: number): number | null {
+    const index = waitingQueueIds().indexOf(playerId);
+    return index >= 0 ? index + 1 : null;
+  }
+
+  function queueStatus(playerId: number): QueueStatus | null {
+    const entry = findQueueEntry(playerId);
+    if (!entry) {
+      return null;
+    }
+    return {
+      position: queuePosition(playerId),
+      onField: isOnField(playerId),
+      afk: entry.afk,
+    };
+  }
+
+  function availablePlayerCount(): number {
+    return connectionQueue.filter((entry) => !entry.afk).length;
   }
 
   function currentDesiredFieldCount(): number {
-    return desiredFieldCount(connectionQueue.length, instantFill);
+    return desiredFieldCount(availablePlayerCount(), instantFill);
   }
 
   function isOnField(playerId: number): boolean {
@@ -249,15 +292,81 @@ export default function setupMatch(
     fieldHistory.splice(fieldIndex, 1);
     clearAfkTracking(playerId);
     moveToTeam(playerId, TEAM.SPECTATORS);
-    announceTo(playerId, waitingMessage(), 0xffcc00);
     return true;
   }
 
-  function notifyWaitingPlayer(playerId: number): void {
-    if (isOnField(playerId)) {
-      return;
+  function toggleAfk(playerId: number): boolean | null {
+    const entry = findQueueEntry(playerId);
+    if (!entry || !room.getPlayer(playerId)) {
+      return null;
     }
-    announceTo(playerId, waitingMessage(), 0xffcc00);
+
+    entry.afk = !entry.afk;
+
+    if (entry.afk) {
+      removeFromField(playerId);
+    }
+
+    syncRoster();
+
+    return entry.afk;
+  }
+
+  function grantSubAdmin(playerId: number): boolean {
+    const entry = findQueueEntry(playerId);
+    if (!entry || !room.getPlayer(playerId)) {
+      return false;
+    }
+    entry.admin = true;
+    return true;
+  }
+
+  function isSubAdmin(playerId: number): boolean {
+    return findQueueEntry(playerId)?.admin === true;
+  }
+
+  function toggleMute(playerId: number): boolean | null {
+    if (!findQueueEntry(playerId) || !room.getPlayer(playerId)) {
+      return null;
+    }
+    if (mutedPlayers.has(playerId)) {
+      mutedPlayers.delete(playerId);
+      return false;
+    }
+    mutedPlayers.add(playerId);
+    return true;
+  }
+
+  function isMuted(playerId: number): boolean {
+    return mutedPlayers.has(playerId);
+  }
+
+  function syncQueueNotifications(): void {
+    const waiting = waitingQueueIds();
+    const waitingSet = new Set(waiting);
+
+    for (const playerId of [...lastQueuePosition.keys()]) {
+      if (!waitingSet.has(playerId)) {
+        lastQueuePosition.delete(playerId);
+      }
+    }
+
+    waiting.forEach((playerId, index) => {
+      const position = index + 1;
+      const previous = lastQueuePosition.get(playerId);
+      if (previous === position) {
+        return;
+      }
+      lastQueuePosition.set(playerId, position);
+      if (previous == null) {
+        announceTo(playerId, waitingMessage(), 0xffcc00);
+      }
+      announceTo(
+        playerId,
+        t("queue.position", { position: String(position) }),
+        0xffcc00
+      );
+    });
   }
 
   function mapLabel(mapKey: MapKey): string {
@@ -349,8 +458,7 @@ export default function setupMatch(
   }
 
   function syncPendingMap(): void {
-    const teamSize = Math.floor(currentDesiredFieldCount() / 2);
-    const target = desiredMapKey(teamSize);
+    const target = desiredMapKey(fieldHistory.length);
 
     if (target === currentMap) {
       pendingMap = null;
@@ -427,7 +535,9 @@ export default function setupMatch(
     }
 
     const newcomers: number[] = [];
-    const waiting = connectionQueue.filter((playerId) => !isOnField(playerId));
+    const waiting = connectionQueue
+      .filter((entry) => !entry.afk && !isOnField(entry.id))
+      .map((entry) => entry.id);
 
     while (fieldHistory.length < desiredCount && waiting.length > 0) {
       const playerId = waiting.shift();
@@ -442,9 +552,9 @@ export default function setupMatch(
       assignPlayers(newcomers);
     }
 
-    for (const playerId of connectionQueue) {
-      if (!isOnField(playerId)) {
-        moveToTeam(playerId, TEAM.SPECTATORS);
+    for (const entry of connectionQueue) {
+      if (!isOnField(entry.id)) {
+        moveToTeam(entry.id, TEAM.SPECTATORS);
       }
     }
 
@@ -469,18 +579,23 @@ export default function setupMatch(
 
     syncPendingMap();
     ensureGameState();
+    syncQueueNotifications();
   }
 
   room.onPlayerJoin = (player) => {
-    connectionQueue.push(player.id);
+    connectionQueue.push({
+      id: player.id,
+      name: player.name,
+      afk: false,
+      admin: false,
+    });
     moveToTeam(player.id, TEAM.SPECTATORS);
     announce(t("match.playerJoined", { name: player.name }), 0xffffff);
     syncRoster();
-    notifyWaitingPlayer(player.id);
   };
 
   room.onPlayerLeave = (player) => {
-    const index = connectionQueue.indexOf(player.id);
+    const index = connectionQueue.findIndex((entry) => entry.id === player.id);
     if (index >= 0) {
       connectionQueue.splice(index, 1);
     }
@@ -491,8 +606,18 @@ export default function setupMatch(
     }
 
     clearAfkTracking(player.id);
+    mutedPlayers.delete(player.id);
     syncRoster();
   };
+
+  bindMatchControls({
+    toggleAfk,
+    getQueueStatus: queueStatus,
+    grantSubAdmin,
+    isSubAdmin,
+    toggleMute,
+    isMuted,
+  });
 
   room.onPlayerInputChange = (playerId) => {
     touchAfk(playerId);

@@ -1,5 +1,5 @@
 import type { MapKey, TeamId } from "./constants";
-import { BIG_MAP_MIN_TEAM_SIZE, TEAM } from "./constants";
+import { TEAM } from "./constants";
 import config from "../utils/config";
 
 export function desiredTeamSize(connectedCount: number): number {
@@ -16,8 +16,14 @@ export function desiredFieldCount(
   return desiredTeamSize(connectedCount) * 2;
 }
 
-export function desiredMapKey(teamSize: number): MapKey {
-  return teamSize >= BIG_MAP_MIN_TEAM_SIZE ? "big" : "small";
+export function desiredMapKey(totalFieldPlayers: number): MapKey {
+  if (totalFieldPlayers >= config.mapSwitchToBigPlayers) {
+    return "big";
+  }
+  if (totalFieldPlayers <= config.mapSwitchToSmallMaxPlayers) {
+    return "small";
+  }
+  return "small";
 }
 
 export function pickTeamForPlayer(
