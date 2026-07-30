@@ -7,6 +7,7 @@ export interface MatchControls {
   isSubAdmin: (playerId: number) => boolean;
   toggleMute: (playerId: number) => boolean | null;
   isMuted: (playerId: number) => boolean;
+  togglePriority: (actorId: number, targetId: number) => boolean | null;
 }
 
 const matchControls: MatchControls = {
@@ -16,6 +17,7 @@ const matchControls: MatchControls = {
   isSubAdmin: () => false,
   toggleMute: () => null,
   isMuted: () => false,
+  togglePriority: () => null,
 };
 
 export function bindMatchControls(controls: MatchControls): void {
@@ -25,6 +27,7 @@ export function bindMatchControls(controls: MatchControls): void {
   matchControls.isSubAdmin = controls.isSubAdmin;
   matchControls.toggleMute = controls.toggleMute;
   matchControls.isMuted = controls.isMuted;
+  matchControls.togglePriority = controls.togglePriority;
 }
 
 export function getMatchControls(): MatchControls {

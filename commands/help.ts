@@ -1,18 +1,28 @@
 import t from "../utils/i18n";
 import type { Command } from "./types";
+import { canModerate } from "./moderation";
 
 const helpCommand: Command = {
   name: "help",
   execute({ room, playerId }) {
-    const message = [
+    const lines = [
       t("help.header"),
       t("help.afk"),
       t("help.queue"),
       t("help.help"),
       t("help.admin"),
-    ].join("\n");
+    ];
 
-    room.sendAnnouncement(message, playerId, 0x44aaff, "bold", 1);
+    if (canModerate(room, playerId)) {
+      lines.push(
+        t("help.modHeader"),
+        t("help.kick"),
+        t("help.mute"),
+        t("help.priority")
+      );
+    }
+
+    room.sendAnnouncement(lines.join("\n"), playerId, 0x44aaff, "bold", 1);
   },
 };
 

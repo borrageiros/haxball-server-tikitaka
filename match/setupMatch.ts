@@ -40,6 +40,7 @@ export default function setupMatch(
   const connectionQueue: QueueEntry[] = [];
   const fieldHistory: number[] = [];
   const mutedPlayers = new Set<number>();
+  const priorityPairs = new Map<number, number>();
   const lastActiveAt = new Map<number, number>();
   const lastPos = new Map<number, { x: number; y: number }>();
   const afkWarnedSec = new Map<number, number>();
@@ -190,13 +191,77 @@ export default function setupMatch(
     room.setPlayerTeam(playerId, teamId);
   }
 
+  function priorityPartnerId(playerId: number): number | null {
+    for (const [actorId, targetId] of priorityPairs) {
+      if (actorId === playerId) {
+        return targetId;
+      }
+      if (targetId === playerId) {
+        return actorId;
+      }
+    }
+    return null;
+  }
+
+  function priorityPartnerTeam(playerId: number): TeamId | null {
+    const partnerId = priorityPartnerId(playerId);
+    if (partnerId == null || !isOnField(partnerId)) {
+      return null;
+    }
+    const teamId = room.getPlayer(partnerId)?.team.id;
+    return teamId === TEAM.RED || teamId === TEAM.BLUE ? teamId : null;
+  }
+
+  function togglePriority(actorId: number, targetId: number): boolean | null {
+    if (!room.getPlayer(targetId)) {
+      return null;
+    }
+    if (priorityPairs.get(actorId) === targetId) {
+      priorityPairs.delete(actorId);
+      return false;
+    }
+    priorityPairs.set(actorId, targetId);
+    return true;
+  }
+
+  function clearPriorityFor(playerId: number): void {
+    for (const [actorId, targetId] of priorityPairs) {
+      if (actorId === playerId || targetId === playerId) {
+        priorityPairs.delete(actorId);
+      }
+    }
+  }
+
+  function priorityUnits(playerIds: number[]): number[][] {
+    const remaining = new Set(playerIds);
+    const units: number[][] = [];
+
+    for (const [actorId, targetId] of priorityPairs) {
+      if (remaining.has(actorId) && remaining.has(targetId)) {
+        remaining.delete(actorId);
+        remaining.delete(targetId);
+        units.push([actorId, targetId]);
+      }
+    }
+
+    for (const playerId of playerIds) {
+      if (remaining.has(playerId)) {
+        units.push([playerId]);
+      }
+    }
+
+    return units;
+  }
+
   function assignPlayers(playerIds: number[]): void {
     const { red, blue } = countTeams();
     let redCount = red;
     let blueCount = blue;
 
     for (const playerId of playerIds) {
-      const teamId = pickTeamForPlayer(redCount, blueCount);
+      const teamId =
+        (redCount === blueCount ? priorityPartnerTeam(playerId) : null) ??
+        pickTeamForPlayer(redCount, blueCount);
       moveToTeam(playerId, teamId);
       initAfkTracking(playerId);
       if (teamId === TEAM.RED) {
@@ -256,10 +321,23 @@ export default function setupMatch(
   }
 
   function reshuffleFieldTeams(): void {
-    const players = shuffleInPlace([...fieldHistory]);
-    players.forEach((playerId, index) => {
-      moveToTeam(playerId, index % 2 === 0 ? TEAM.RED : TEAM.BLUE);
-    });
+    const units = shuffleInPlace(priorityUnits([...fieldHistory]));
+    units.sort((a, b) => b.length - a.length);
+
+    let redCount = 0;
+    let blueCount = 0;
+
+    for (const unit of units) {
+      const teamId = pickTeamForPlayer(redCount, blueCount);
+      for (const playerId of unit) {
+        moveToTeam(playerId, teamId);
+      }
+      if (teamId === TEAM.RED) {
+        redCount += unit.length;
+      } else {
+        blueCount += unit.length;
+      }
+    }
   }
 
   function announce(message: string, color = 0xffffff): void {
@@ -607,6 +685,7 @@ export default function setupMatch(
 
     clearAfkTracking(player.id);
     mutedPlayers.delete(player.id);
+    clearPriorityFor(player.id);
     syncRoster();
   };
 
@@ -617,6 +696,7 @@ export default function setupMatch(
     isSubAdmin,
     toggleMute,
     isMuted,
+    togglePriority,
   });
 
   room.onPlayerInputChange = (playerId) => {

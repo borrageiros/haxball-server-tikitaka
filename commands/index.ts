@@ -4,6 +4,7 @@ import afkCommand from "./afk";
 import helpCommand from "./help";
 import kickCommand from "./kick";
 import muteCommand from "./mute";
+import priorityCommand from "./priority";
 import queueCommand from "./queue";
 import subadminCommand from "./subadmin";
 import { getMatchControls } from "../match/controls";
@@ -18,6 +19,7 @@ const commandList: Command[] = [
   subadminCommand,
   kickCommand,
   muteCommand,
+  priorityCommand,
 ];
 
 const commands = new Map(

@@ -14,9 +14,10 @@ Headless HaxBall room server built with [node-haxball](https://github.com/wxyz-a
 - Admin access with `!admin <password>` using `ADMIN_PASSWORD`
 - Hidden sub-admin access with `!subadmin <password>` using `SUBADMIN_PASSWORD` (no visible room admin)
 - Moderation commands `!kick` and `!mute` for room admins and sub-admins
+- Hidden team priority with `!priority` (moderators can pair themselves with another player onto the same team; reversible)
 - Voluntary AFK with `!afk` (hold queue spot as spectator without playing)
 - Queue position with `!queue` and automatic private notifications when the position changes
-- Command list with `!help` (private message)
+- Command list with `!help` (private message); moderators also see the hidden commands
 - Localization (`es` / `en`) driven by `LANGUAGE`
 - Docker-ready production image
 
@@ -70,7 +71,8 @@ When the room opens, the console prints the room link.
 │   ├── admin.ts          # !admin
 │   ├── subadmin.ts       # !subadmin (hidden)
 │   ├── kick.ts           # !kick
-│   └── mute.ts           # !mute
+│   ├── mute.ts           # !mute
+│   └── priority.ts       # !priority (hidden)
 ├── match/                # Matchmaking, teams, and map switching
 │   ├── constants.ts      # Team ids, max size, map thresholds
 │   ├── helpers.ts        # Pure match helpers
@@ -198,6 +200,7 @@ There are two separate AFK behaviours:
 - There is **no pick/choose system**.
 - When a match ends, players still eligible by the connection queue stay on the field.
 - Those players are **randomly reassigned** between red and blue (still balanced) as soon as the match ends.
+- If a moderator set a **team priority pair** (`!priority`), both players of the pair are kept on the **same team** during the reshuffle; everyone else stays random and teams stay balanced.
 - After the engine finishes the victory pause (~5s) and the game fully stops, a new countdown starts automatically (no player join/leave needed).
 - If a map change is pending at that point, the stadium is applied first and then the countdown runs.
 
@@ -237,20 +240,21 @@ Public chat is rebroadcast as announcements colored by the sender's team (red, b
 
 | Command | Description |
 | --- | --- |
-| `!help` | Private list of available commands |
+| `!help` | Private list of available commands. Room admins and sub-admins also see the hidden moderation commands |
 | `!afk` | Toggle voluntary AFK (spectator, keep queue spot, skip field) |
 | `!queue` | Private message with your visible queue position (or a notice if you are on the field or AFK) |
 | `!admin <password>` | Grants room admin if the password matches `ADMIN_PASSWORD` |
-| `!kick <id or name>` | Kicks a player (room admins and sub-admins). Not listed in `!help` |
-| `!mute <id or name>` | Toggles chat mute for a player (room admins and sub-admins). Not listed in `!help` |
+| `!kick <id or name>` | Kicks a player (room admins and sub-admins). Listed in `!help` only for moderators |
+| `!mute <id or name>` | Toggles chat mute for a player (room admins and sub-admins). Listed in `!help` only for moderators |
 
 ### Hidden commands
 
-These are registered but intentionally omitted from `!help`:
+These are omitted from `!help` for regular players. Moderation commands appear in `!help` only for room admins and sub-admins:
 
 | Command | Description |
 | --- | --- |
-| `!subadmin <password>` | Grants sub-admin (`admin: true` on the queue entry) if the password matches `SUBADMIN_PASSWORD`. Does **not** call `setPlayerAdmin`, so the player is not a visible room admin. Unlocks `!kick` and `!mute`. |
+| `!subadmin <password>` | Grants sub-admin (`admin: true` on the queue entry) if the password matches `SUBADMIN_PASSWORD`. Does **not** call `setPlayerAdmin`, so the player is not a visible room admin. Unlocks `!kick`, `!mute`, and `!priority`. |
+| `!priority <id or name>` | Room admins and sub-admins only. Pairs the caller with the target player so both land on the **same team** in every end-of-match reshuffle; everyone else stays random. Running it again with the same player disables it (reversible). The pair is also cleared when either player leaves the room. Non-moderators get the regular "unknown command" reply, so the command stays invisible to them. |
 
 ### Adding a new command
 
