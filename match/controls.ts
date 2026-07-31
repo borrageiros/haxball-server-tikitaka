@@ -8,6 +8,8 @@ export interface MatchControls {
   toggleMute: (playerId: number) => boolean | null;
   isMuted: (playerId: number) => boolean;
   togglePriority: (actorId: number, targetId: number) => boolean | null;
+  getPriorityList: (actorId: number) => number[];
+  clearPriorityList: (actorId: number) => number;
 }
 
 const matchControls: MatchControls = {
@@ -18,6 +20,8 @@ const matchControls: MatchControls = {
   toggleMute: () => null,
   isMuted: () => false,
   togglePriority: () => null,
+  getPriorityList: () => [],
+  clearPriorityList: () => 0,
 };
 
 export function bindMatchControls(controls: MatchControls): void {
@@ -28,6 +32,8 @@ export function bindMatchControls(controls: MatchControls): void {
   matchControls.toggleMute = controls.toggleMute;
   matchControls.isMuted = controls.isMuted;
   matchControls.togglePriority = controls.togglePriority;
+  matchControls.getPriorityList = controls.getPriorityList;
+  matchControls.clearPriorityList = controls.clearPriorityList;
 }
 
 export function getMatchControls(): MatchControls {

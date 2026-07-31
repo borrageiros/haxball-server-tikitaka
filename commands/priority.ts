@@ -1,7 +1,31 @@
 import t from "../utils/i18n";
 import { getMatchControls } from "../match/controls";
-import type { Command } from "./types";
+import type { Command, Room } from "./types";
 import { canModerate, resolvePlayerId } from "./moderation";
+
+function sendPriorityList(room: Room, playerId: number): void {
+  const targetIds = getMatchControls().getPriorityList(playerId);
+  if (targetIds.length === 0) {
+    room.sendAnnouncement(
+      t("priority.listEmpty"),
+      playerId,
+      0xffcc00,
+      "bold",
+      1
+    );
+    return;
+  }
+  const names = targetIds
+    .map((targetId) => room.getPlayer(targetId)?.name ?? String(targetId))
+    .join(", ");
+  room.sendAnnouncement(
+    t("priority.list", { names }),
+    playerId,
+    0x44aaff,
+    "bold",
+    1
+  );
+}
 
 const priorityCommand: Command = {
   name: "priority",
@@ -20,6 +44,25 @@ const priorityCommand: Command = {
     const query = args.join(" ").trim();
     if (!query) {
       room.sendAnnouncement(t("priority.usage"), playerId, 0xffcc00, "bold", 1);
+      sendPriorityList(room, playerId);
+      return;
+    }
+
+    const subcommand = query.toLowerCase();
+    if (subcommand === "list") {
+      sendPriorityList(room, playerId);
+      return;
+    }
+
+    if (subcommand === "clear") {
+      const removed = getMatchControls().clearPriorityList(playerId);
+      room.sendAnnouncement(
+        removed > 0 ? t("priority.cleared") : t("priority.listEmpty"),
+        playerId,
+        0xffcc00,
+        "bold",
+        1
+      );
       return;
     }
 
@@ -54,6 +97,7 @@ const priorityCommand: Command = {
       "bold",
       1
     );
+    sendPriorityList(room, playerId);
   },
 };
 

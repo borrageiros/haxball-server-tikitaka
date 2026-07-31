@@ -3,9 +3,29 @@ import createHaxball from "node-haxball";
 const API = createHaxball();
 const { Utils, Room, ConnectionState } = API;
 
-const ROOM_ID = process.argv[2] || "fn37EnzHMn0";
+function parseRoomId(raw: string): string {
+  const value = (raw || "").trim();
+  const fromQuery = value.match(/[?&]c=([^&]+)/i);
+  if (fromQuery?.[1]) {
+    return decodeURIComponent(fromQuery[1]);
+  }
+  const fromPath = value.match(/haxball\.com\/play\/([^/?#]+)/i);
+  if (fromPath?.[1]) {
+    return decodeURIComponent(fromPath[1]);
+  }
+  return value.replace(/^https?:\/\//i, "").split("/").pop() || value;
+}
+
+const ROOM_ID = parseRoomId(process.argv[2] || "");
+const ROOM_PASSWORD = (process.env.ROOM_PASSWORD || "").trim() || null;
 const JOIN_GAP_MS = Number(process.env.JOIN_GAP_MS || 2800);
+const GOAL_TIMEOUT_MS = Number(process.env.GOAL_TIMEOUT_MS || 180000);
 const RUN_ID = Date.now().toString(36).slice(-4);
+
+if (!ROOM_ID) {
+  console.error("Usage: node scripts/matchE2E.ts <roomId|roomLink>");
+  process.exit(2);
+}
 
 function botName(index: number): string {
   return `T${RUN_ID}_${String(index).padStart(2, "0")}`;
@@ -27,6 +47,7 @@ const results: CheckResult[] = [];
 const bots: Bot[] = [];
 const announcements: string[] = [];
 const seenAnnouncements = new Set<string>();
+let nextBotIndex = 1;
 
 function log(msg: string): void {
   console.log(`[${new Date().toISOString().slice(11, 19)}] ${msg}`);
@@ -54,6 +75,7 @@ function snapshot() {
       red: [] as string[],
       blue: [] as string[],
       spec: [] as string[],
+      field: [] as string[],
       stadium: null as string | null,
       score: null as string | null,
       gameActive: false,
@@ -80,32 +102,45 @@ function snapshot() {
     red,
     blue,
     spec,
+    field: [...red, ...blue],
     stadium: (room.stadium?.name as string) ?? null,
     score: gameActive ? `${room.redScore ?? 0}-${room.blueScore ?? 0}` : null,
     gameActive,
   };
 }
 
-function expectBalance(id: string, expectedSize: number): void {
+function stadiumKind(name: string | null): "small" | "big" | "unknown" {
+  const lower = (name ?? "").toLowerCase();
+  if (lower.includes("5")) return "big";
+  if (lower.includes("3")) return "small";
+  return "unknown";
+}
+
+function expectField(id: string, expectedOnField: number): void {
   const snap = snapshot();
+  const onField = snap.field.length;
+  const balanced = Math.abs(snap.red.length - snap.blue.length) <= 1;
   const ok =
-    snap.red.length === expectedSize &&
-    snap.blue.length === expectedSize &&
-    (expectedSize === 0 ? !snap.gameActive : snap.gameActive);
+    onField === expectedOnField &&
+    balanced &&
+    (expectedOnField === 0 ? !snap.gameActive : snap.gameActive);
   record(
     id,
     ok,
-    `red=${snap.red.length}[${snap.red}] blue=${snap.blue.length}[${snap.blue}] spec=${snap.spec.length}[${snap.spec}] game=${snap.gameActive} stadium=${snap.stadium} score=${snap.score}`
+    `field=${onField} red=${snap.red.length}[${snap.red}] blue=${snap.blue.length}[${snap.blue}] spec=${snap.spec.length}[${snap.spec}] game=${snap.gameActive} stadium=${snap.stadium} score=${snap.score}`
   );
 }
 
 function expectStadium(id: string, kind: "small" | "big"): void {
-  const name = (snapshot().stadium ?? "").toLowerCase();
-  const ok = kind === "big" ? name.includes("5") : name.includes("3");
-  record(id, ok, `stadium="${snapshot().stadium}" expected ${kind}`);
+  const stadium = snapshot().stadium;
+  record(id, stadiumKind(stadium) === kind, `stadium="${stadium}" expected ${kind}`);
 }
 
-function expectAnnouncement(id: string, fragment: string, sinceIndex: number): void {
+function expectAnnouncement(
+  id: string,
+  fragment: string,
+  sinceIndex: number
+): void {
   const hit = announcements
     .slice(sinceIndex)
     .find((a) => a.toLowerCase().includes(fragment.toLowerCase()));
@@ -143,7 +178,7 @@ function attachAutoPlay(room: any): void {
   };
 }
 
-async function joinBot(index: number, retries = 6): Promise<Bot> {
+async function joinBot(index = nextBotIndex++, retries = 6): Promise<Bot> {
   const name = botName(index);
 
   for (let attempt = 1; attempt <= retries; attempt += 1) {
@@ -162,7 +197,7 @@ async function joinBot(index: number, retries = 6): Promise<Bot> {
         Room.join(
           {
             id: ROOM_ID,
-            password: null,
+            password: ROOM_PASSWORD,
             authObj,
           },
           {
@@ -180,13 +215,10 @@ async function joinBot(index: number, retries = 6): Promise<Bot> {
               clearTimeout(timeout);
 
               room.onAnnouncement = (msg: string) => {
-                const key = `${msg}`;
-                if (!seenAnnouncements.has(key)) {
-                  seenAnnouncements.add(key);
-                  announcements.push(msg);
+                announcements.push(msg);
+                if (!seenAnnouncements.has(msg)) {
+                  seenAnnouncements.add(msg);
                   log(`ANN: ${msg}`);
-                } else {
-                  announcements.push(msg);
                 }
               };
 
@@ -256,7 +288,32 @@ async function leaveBot(name: string): Promise<void> {
   }
 
   await sleep(800);
-  log(`LEFT ${name} (roomPlayers=${snapshot().names.length} tracked=${bots.length})`);
+  log(
+    `LEFT ${name} (roomPlayers=${snapshot().names.length} tracked=${bots.length})`
+  );
+}
+
+async function leaveNewest(count: number): Promise<void> {
+  for (let i = 0; i < count; i += 1) {
+    const bot = bots[bots.length - 1];
+    if (!bot) break;
+    await leaveBot(bot.name);
+  }
+}
+
+async function ensureBotCount(count: number): Promise<void> {
+  while (bots.length > count) {
+    await leaveNewest(1);
+  }
+  while (bots.length < count) {
+    await joinBot();
+  }
+  const ready = await waitForField(count);
+  if (!ready) {
+    throw new Error(
+      `Timeout ensuring ${count} on field; snap=${JSON.stringify(snapshot())}`
+    );
+  }
 }
 
 async function cleanupBots(): Promise<void> {
@@ -279,6 +336,25 @@ async function waitUntil(
   return false;
 }
 
+async function waitForField(expectedOnField: number, timeoutMs = 15000): Promise<boolean> {
+  return waitUntil(
+    `field=${expectedOnField}`,
+    () => {
+      const snap = snapshot();
+      const balanced = Math.abs(snap.red.length - snap.blue.length) <= 1;
+      if (expectedOnField === 0) {
+        return snap.field.length === 0 && !snap.gameActive;
+      }
+      return (
+        snap.field.length === expectedOnField &&
+        balanced &&
+        snap.gameActive
+      );
+    },
+    timeoutMs
+  );
+}
+
 async function waitForScoreChange(
   previous: string | null,
   timeoutMs: number
@@ -292,6 +368,25 @@ async function waitForScoreChange(
   return snapshot().score;
 }
 
+async function waitForGoalAndStadium(
+  kind: "small" | "big",
+  timeoutMs = GOAL_TIMEOUT_MS
+): Promise<{ scored: string | null; switched: boolean }> {
+  const scoreBefore = snapshot().score;
+  const scored = await waitForScoreChange(scoreBefore, timeoutMs);
+  const goalOk = Boolean(scored && scored !== scoreBefore);
+  if (!goalOk) {
+    return { scored, switched: false };
+  }
+  const switched = await waitUntil(
+    `${kind} map after goal`,
+    () => stadiumKind(snapshot().stadium) === kind,
+    10000
+  );
+  await sleep(1000);
+  return { scored, switched };
+}
+
 function printResults(): void {
   const passed = results.filter((r) => r.ok).length;
   const failed = results.filter((r) => !r.ok).length;
@@ -303,203 +398,208 @@ function printResults(): void {
 }
 
 async function run(): Promise<void> {
-  log(`Room=${ROOM_ID} run=${RUN_ID} joinGap=${JOIN_GAP_MS}ms`);
+  log(
+    `Room=${ROOM_ID} run=${RUN_ID} joinGap=${JOIN_GAP_MS}ms goalTimeout=${GOAL_TIMEOUT_MS}ms`
+  );
 
   console.log(`
 ========== PLAN DE CASOS ==========
-A) Entradas progresivas 1..11
-B) Salida en 5vs5 con espectador
-C) Bajar a 3vs3
-D) LIFO 2vs2 -> 1vs1
-E) 4vs4 + gol -> mapa grande + marcador
-F) 3vs3 + gol -> mapa pequeño + marcador
-G) Cambio manual de equipo
+A) Joins instant 1..8 + aviso mapa grande
+B) Gol con 8 -> mapa grande (marcador a 0)
+C) Pending cancelado: 8 -> leave a 6 antes del gol -> sigue small
+D) Pending recuperado: 6 -> rejoin a 8 -> gol -> big
+E) Histeresis: big con 8 -> leave a 7 -> sigue big
+F) Shrink a 6 en big -> gol -> small
+G) Cambio manual de equipo no aplica
 ===================================
 `);
 
-  log("--- A: joins ---");
-  await joinBot(1);
+  log("--- A: progressive joins (instant) ---");
+  await joinBot();
   if (snapshot().names.length > 1) {
     throw new Error(
       `Room is not empty at start (players=${snapshot().names.join(",")}). Restart the room and retry.`
     );
   }
-  expectBalance("A1_1_player_spect_no_game", 0);
+  await waitForField(1);
+  expectField("A1_1_player_starts", 1);
+  expectStadium("A1b_small_map", "small");
 
-  await joinBot(2);
-  expectBalance("A2_2_players_1v1", 1);
+  await joinBot();
+  await waitForField(2);
+  expectField("A2_2_players_1v1", 2);
 
-  await joinBot(3);
-  expectBalance("A3_3_players_still_1v1", 1);
-  record(
-    "A3b_third_spectator",
-    snapshot().spec.includes(botName(3)),
-    `spec=${snapshot().spec}`
-  );
+  await joinBot();
+  await waitForField(3);
+  expectField("A3_3_players_2v1", 3);
 
-  await joinBot(4);
-  expectBalance("A4_4_players_2v2", 2);
+  await joinBot();
+  await waitForField(4);
+  expectField("A4_4_players_2v2", 4);
 
-  await joinBot(5);
-  expectBalance("A5_5_players_still_2v2", 2);
+  await joinBot();
+  await waitForField(5);
+  expectField("A5_5_players_3v2", 5);
 
-  await joinBot(6);
-  expectBalance("A6_6_players_3v3", 3);
-  expectStadium("A6b_small_map", "small");
+  await joinBot();
+  await waitForField(6);
+  expectField("A6_6_players_3v3", 6);
+  expectStadium("A6b_still_small", "small");
 
-  await joinBot(7);
-  expectBalance("A7_7_players_still_3v3", 3);
+  await joinBot();
+  await waitForField(7);
+  expectField("A7_7_players_4v3_hysteresis_small", 7);
+  expectStadium("A7b_still_small", "small");
 
   const annAt8 = announcements.length;
-  await joinBot(8);
-  expectBalance("A8_8_players_4v4", 4);
-  expectAnnouncement("A8b_map_pending_or_changed", "mapa", annAt8);
+  await joinBot();
+  await waitForField(8);
+  expectField("A8_8_players_4v4", 8);
+  expectAnnouncement("A8b_map_pending", "mapa", annAt8);
 
-  await joinBot(9);
-  expectBalance("A9_9_players_still_4v4", 4);
+  log("--- B: goal switches to big and resets score ---");
+  const beforeBig = snapshot().score;
+  const { scored: scoredBig, switched: switchedBig } =
+    await waitForGoalAndStadium("big");
   record(
-    "A9b_ninth_spectator",
-    snapshot().spec.includes(botName(9)),
-    `spec=${snapshot().spec}`
+    "B1_goal_scored",
+    Boolean(scoredBig && scoredBig !== beforeBig),
+    `before=${beforeBig} after=${scoredBig}`
   );
-
-  await joinBot(10);
-  expectBalance("A10_10_players_5v5", 5);
-
-  await joinBot(11);
-  expectBalance("A11_11_players_still_5v5", 5);
   record(
-    "A11b_eleventh_spectator",
-    snapshot().spec.includes(botName(11)),
-    `spec=${snapshot().spec}`
+    "B2_big_map_after_goal",
+    switchedBig,
+    `stadium=${snapshot().stadium}`
   );
-
-  log("--- B: leave from 5v5 fills from oldest spectator ---");
-  const before = snapshot();
-  const oldestSpec =
-    before.spec.find((n) => n.startsWith(`T${RUN_ID}_`)) ?? before.spec[0];
-  const victim = before.red[0] ?? before.blue[0];
-  if (!victim || !oldestSpec) {
-    record("B1_precondition", false, `victim=${victim} oldestSpec=${oldestSpec}`);
-  } else {
-    await leaveBot(victim);
-    expectBalance("B1_still_5v5_after_field_leave", 5);
-    const after = snapshot();
+  if (switchedBig) {
+    await waitUntil(
+      "rematch after big map",
+      () => snapshot().gameActive && snapshot().score === "0-0",
+      12000
+    );
+    const after = snapshot().score;
     record(
-      "B1b_oldest_spec_entered",
-      after.red.includes(oldestSpec) || after.blue.includes(oldestSpec),
-      `oldestSpec=${oldestSpec} red=${after.red} blue=${after.blue} spec=${after.spec}`
+      "B3_score_reset_after_map_change",
+      after === "0-0",
+      `score=${after} game=${snapshot().gameActive}`
     );
   }
 
-  log("--- C: shrink to 3v3 ---");
-  const hadBigMap = (snapshot().stadium ?? "").toLowerCase().includes("5");
-  const annC = announcements.length;
-  while (snapshot().names.filter((n) => n.startsWith(`T${RUN_ID}_`)).length > 6) {
-    const tracked = bots[bots.length - 1];
-    if (!tracked) break;
-    await leaveBot(tracked.name);
-  }
-  expectBalance("C1_6_players_3v3", 3);
-  record(
-    "C1c_connected_count",
-    snapshot().names.length === 6,
-    `connected=${snapshot().names.length} names=${snapshot().names}`
-  );
-  if (hadBigMap) {
-    expectAnnouncement("C1b_small_map_signal", "mapa", annC);
+  log("--- C: disconnect while pending big cancels switch ---");
+  await ensureBotCount(6);
+  await waitForField(6);
+  expectField("C1_back_to_6", 6);
+  if (stadiumKind(snapshot().stadium) === "big") {
+    const beforeSmall = snapshot().score;
+    const { scored, switched } = await waitForGoalAndStadium("small");
+    record(
+      "C2_goal_to_leave_big",
+      Boolean(scored && scored !== beforeSmall),
+      `before=${beforeSmall} after=${scored}`
+    );
+    record("C3_small_after_shrink", switched, `stadium=${snapshot().stadium}`);
   } else {
     record(
-      "C1b_small_map_signal",
+      "C2_already_small_after_shrink",
       true,
-      "skipped: map was still small (no prior goal to switch big)"
+      `stadium=${snapshot().stadium}`
     );
   }
 
-  log("--- D: LIFO 2v2 -> 1v1 ---");
-  while (snapshot().names.filter((n) => n.startsWith(`T${RUN_ID}_`)).length > 4) {
-    const tracked = bots[bots.length - 1];
-    if (!tracked) break;
-    await leaveBot(tracked.name);
-  }
-  expectBalance("D1_4_players_2v2", 2);
-  record(
-    "D1b_connected_count",
-    snapshot().names.length === 4,
-    `connected=${snapshot().names.length}`
+  const annBeforePending = announcements.length;
+  await ensureBotCount(8);
+  await waitForField(8);
+  expectField("C4_8_again_pending_big", 8);
+  expectStadium("C4b_still_small_before_goal", "small");
+  expectAnnouncement("C4c_pending_again", "mapa", annBeforePending);
+
+  await leaveNewest(2);
+  await waitForField(6);
+  expectField("C5_leave_to_6_while_pending", 6);
+  expectStadium("C5b_still_small", "small");
+
+  const scoreBeforeCancel = snapshot().score;
+  const scoredCancel = await waitForScoreChange(
+    scoreBeforeCancel,
+    GOAL_TIMEOUT_MS
   );
-  const dSnap = snapshot();
-  const dVictim = dSnap.red[0] ?? dSnap.blue[0];
-  if (dVictim) {
-    await leaveBot(dVictim);
-    expectBalance("D2_3_connected_back_to_1v1", 1);
+  const cancelGoalOk = Boolean(
+    scoredCancel && scoredCancel !== scoreBeforeCancel
+  );
+  record(
+    "C6_goal_after_pending_cancelled",
+    cancelGoalOk,
+    `before=${scoreBeforeCancel} after=${scoredCancel}`
+  );
+  await sleep(2500);
+  expectStadium("C7_stays_small_after_goal", "small");
+  record(
+    "C7b_did_not_switch_to_big",
+    stadiumKind(snapshot().stadium) === "small",
+    `stadium=${snapshot().stadium}`
+  );
+
+  log("--- D: reconnect enough players recovers pending big ---");
+  const annRecover = announcements.length;
+  await ensureBotCount(8);
+  await waitForField(8);
+  expectField("D1_8_players_again", 8);
+  expectAnnouncement("D1b_pending_recovered", "mapa", annRecover);
+
+  const beforeRecover = snapshot().score;
+  const { scored: scoredRecover, switched: switchedRecover } =
+    await waitForGoalAndStadium("big");
+  record(
+    "D2_goal_after_reconnect",
+    Boolean(scoredRecover && scoredRecover !== beforeRecover),
+    `before=${beforeRecover} after=${scoredRecover}`
+  );
+  record(
+    "D3_big_map_recovered",
+    switchedRecover,
+    `stadium=${snapshot().stadium}`
+  );
+
+  log("--- E: hysteresis keeps big at 7 ---");
+  if (stadiumKind(snapshot().stadium) !== "big") {
     record(
-      "D2b_connected_count",
-      snapshot().names.length === 3,
-      `connected=${snapshot().names.length} red=${snapshot().red} blue=${snapshot().blue} spec=${snapshot().spec}`
+      "E0_precondition_big",
+      false,
+      `stadium=${snapshot().stadium} (skip hysteresis)`
     );
+  } else {
+    await leaveNewest(1);
+    await waitForField(7);
+    expectField("E1_7_players_on_big", 7);
+    await sleep(1500);
+    expectStadium("E2_hysteresis_keeps_big", "big");
   }
 
-  log("--- E: rebuild 8, wait goal for big map + score ---");
-  let nextIndex = 20;
-  while (bots.length < 8) {
-    await joinBot(nextIndex++);
-  }
-  expectBalance("E1_8_players_4v4", 4);
-
-  const scoreBeforeGoal = snapshot().score;
-  const stadiumBefore = snapshot().stadium;
-  const annE = announcements.length;
-  log(`Waiting goal for map swap. stadium=${stadiumBefore} score=${scoreBeforeGoal}`);
-
-  const scored = await waitForScoreChange(scoreBeforeGoal, 180000);
-  const goalOk = Boolean(scored && scored !== scoreBeforeGoal);
-  record("E2_goal_scored", goalOk, `before=${scoreBeforeGoal} after=${scored}`);
-
-  if (goalOk) {
-    await waitUntil("big map after goal", () => {
-      const n = (snapshot().stadium ?? "").toLowerCase();
-      return n.includes("5");
-    }, 8000);
-    await sleep(1000);
-    expectStadium("E3_big_map_after_goal", "big");
-    expectAnnouncement("E3b_score_preserved_msg", "Marcador", annE);
-    const afterScore = snapshot().score;
+  log("--- F: shrink to 6 on big -> goal -> small ---");
+  await ensureBotCount(6);
+  await waitForField(6);
+  expectField("F1_6_players", 6);
+  if (stadiumKind(snapshot().stadium) === "big") {
+    const beforeSmall = snapshot().score;
+    const { scored, switched } = await waitForGoalAndStadium("small");
     record(
-      "E3c_score_kept_nonzero_or_same_as_goal",
-      afterScore === scored || (afterScore != null && afterScore !== "0-0"),
-      `goalScore=${scored} now=${afterScore}`
+      "F2_goal_for_small",
+      Boolean(scored && scored !== beforeSmall),
+      `before=${beforeSmall} after=${scored}`
     );
-  }
-
-  log("--- F: shrink to 3v3, wait goal for small map + score ---");
-  while (bots.length > 6) {
-    await leaveBot(bots[bots.length - 1]!.name);
-  }
-  expectBalance("F1_6_players_3v3", 3);
-  const scoreBeforeSmall = snapshot().score;
-  const annF = announcements.length;
-  const scoredSmall = await waitForScoreChange(scoreBeforeSmall, 180000);
-  const smallGoalOk = Boolean(scoredSmall && scoredSmall !== scoreBeforeSmall);
-  record("F2_goal_for_small", smallGoalOk, `before=${scoreBeforeSmall} after=${scoredSmall}`);
-  if (smallGoalOk) {
-    await waitUntil("small map after goal", () => {
-      const n = (snapshot().stadium ?? "").toLowerCase();
-      return n.includes("3");
-    }, 8000);
-    await sleep(1000);
-    expectStadium("F3_small_map_after_goal", "small");
-    expectAnnouncement("F3b_score_preserved_msg", "Marcador", annF);
-    const afterScore = snapshot().score;
+    record("F3_small_map_after_goal", switched, `stadium=${snapshot().stadium}`);
+  } else {
     record(
-      "F3c_score_kept",
-      afterScore === scoredSmall || (afterScore != null && afterScore !== "0-0"),
-      `goalScore=${scoredSmall} now=${afterScore}`
+      "F2_already_small",
+      true,
+      `stadium=${snapshot().stadium}`
     );
   }
 
   log("--- G: manual team change ---");
-  const bot = bots.find((b) => snapshot().red.includes(b.name) || snapshot().blue.includes(b.name));
+  const bot = bots.find(
+    (b) => snapshot().red.includes(b.name) || snapshot().blue.includes(b.name)
+  );
   if (bot) {
     const beforeTeam = bot.room.currentPlayer?.team?.id;
     try {
@@ -511,7 +611,7 @@ G) Cambio manual de equipo
     const assigned = snapshot().teams[bot.name];
     const afterTeam = bot.room.currentPlayer?.team?.id;
     record(
-      "G1_team_change_ineffective_vs_balancer",
+      "G1_team_change_ineffective",
       assigned === beforeTeam || afterTeam === beforeTeam,
       `before=${beforeTeam} after=${afterTeam} assigned=${assigned}`
     );

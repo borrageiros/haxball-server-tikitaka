@@ -16,14 +16,17 @@ export function desiredFieldCount(
   return desiredTeamSize(connectedCount) * 2;
 }
 
-export function desiredMapKey(totalFieldPlayers: number): MapKey {
-  if (totalFieldPlayers >= config.mapSwitchToBigPlayers) {
+export function desiredMapKey(
+  eligiblePlayerCount: number,
+  currentMap: MapKey
+): MapKey {
+  if (eligiblePlayerCount >= config.mapSwitchToBigPlayers) {
     return "big";
   }
-  if (totalFieldPlayers <= config.mapSwitchToSmallMaxPlayers) {
+  if (eligiblePlayerCount <= config.mapSwitchToSmallMaxPlayers) {
     return "small";
   }
-  return "small";
+  return currentMap;
 }
 
 export function pickTeamForPlayer(

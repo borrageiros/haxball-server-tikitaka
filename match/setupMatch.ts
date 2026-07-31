@@ -6,6 +6,7 @@ import type { Room } from "../commands/types";
 import type { Stadium } from "../utils/loadStadium";
 import {
   AFK_MOVE_EPSILON,
+  GAME_PLAY_STATE,
   MATCH_COUNTDOWN_SECONDS,
   TEAM,
   type MapKey,
@@ -33,6 +34,10 @@ export default function setupMatch(
     small: loadStadium(utils, config.smallMapFile),
     big: loadStadium(utils, config.bigMapFile),
   };
+  const timeLimits: Record<MapKey, number> = {
+    small: config.smallMapTimeLimit,
+    big: config.bigMapTimeLimit,
+  };
 
   const instantFill = config.fillMode === "instant";
   const minFieldPlayers = instantFill ? 1 : 2;
@@ -40,7 +45,7 @@ export default function setupMatch(
   const connectionQueue: QueueEntry[] = [];
   const fieldHistory: number[] = [];
   const mutedPlayers = new Set<number>();
-  const priorityPairs = new Map<number, number>();
+  const priorityLists = new Map<number, Set<number>>();
   const lastActiveAt = new Map<number, number>();
   const lastPos = new Map<number, { x: number; y: number }>();
   const afkWarnedSec = new Map<number, number>();
@@ -53,8 +58,28 @@ export default function setupMatch(
   let internalAction = false;
   let countdownTimer: ReturnType<typeof setTimeout> | null = null;
 
+  function applyTeamColors(): void {
+    room.setTeamColors(
+      TEAM.RED,
+      0,
+      0xffffff,
+      0xff1e1e,
+      0x111111,
+      0xff1e1e
+    );
+    room.setTeamColors(
+      TEAM.BLUE,
+      90,
+      0x0a0a0a,
+      0x1a6bff,
+      0xffffff
+    );
+  }
+
   room.setCurrentStadium(stadiums.small);
+  room.setTimeLimit(timeLimits.small);
   room.fakeSetTeamsLock(true, 0);
+  applyTeamColors();
 
   const previousOnOperationReceived = room.onOperationReceived;
 
@@ -191,63 +216,109 @@ export default function setupMatch(
     room.setPlayerTeam(playerId, teamId);
   }
 
-  function priorityPartnerId(playerId: number): number | null {
-    for (const [actorId, targetId] of priorityPairs) {
-      if (actorId === playerId) {
-        return targetId;
+  function priorityNeighbors(playerId: number): Set<number> {
+    const neighbors = new Set<number>();
+    const ownTargets = priorityLists.get(playerId);
+    if (ownTargets) {
+      for (const targetId of ownTargets) {
+        neighbors.add(targetId);
       }
-      if (targetId === playerId) {
-        return actorId;
+    }
+    for (const [actorId, targets] of priorityLists) {
+      if (targets.has(playerId)) {
+        neighbors.add(actorId);
+      }
+    }
+    return neighbors;
+  }
+
+  function priorityGroup(playerId: number): Set<number> {
+    const group = new Set<number>([playerId]);
+    const pending = [playerId];
+    while (pending.length > 0) {
+      const currentId = pending.pop()!;
+      for (const neighborId of priorityNeighbors(currentId)) {
+        if (!group.has(neighborId)) {
+          group.add(neighborId);
+          pending.push(neighborId);
+        }
+      }
+    }
+    return group;
+  }
+
+  function priorityPreferredTeam(playerId: number): TeamId | null {
+    for (const mateId of priorityGroup(playerId)) {
+      if (mateId === playerId || !isOnField(mateId)) {
+        continue;
+      }
+      const teamId = room.getPlayer(mateId)?.team.id;
+      if (teamId === TEAM.RED || teamId === TEAM.BLUE) {
+        return teamId;
       }
     }
     return null;
-  }
-
-  function priorityPartnerTeam(playerId: number): TeamId | null {
-    const partnerId = priorityPartnerId(playerId);
-    if (partnerId == null || !isOnField(partnerId)) {
-      return null;
-    }
-    const teamId = room.getPlayer(partnerId)?.team.id;
-    return teamId === TEAM.RED || teamId === TEAM.BLUE ? teamId : null;
   }
 
   function togglePriority(actorId: number, targetId: number): boolean | null {
     if (!room.getPlayer(targetId)) {
       return null;
     }
-    if (priorityPairs.get(actorId) === targetId) {
-      priorityPairs.delete(actorId);
+    const targets = priorityLists.get(actorId);
+    if (targets?.has(targetId)) {
+      targets.delete(targetId);
+      if (targets.size === 0) {
+        priorityLists.delete(actorId);
+      }
       return false;
     }
-    priorityPairs.set(actorId, targetId);
+    if (targets) {
+      targets.add(targetId);
+    } else {
+      priorityLists.set(actorId, new Set([targetId]));
+    }
     return true;
   }
 
+  function getPriorityList(actorId: number): number[] {
+    return [...(priorityLists.get(actorId) ?? [])];
+  }
+
+  function clearPriorityList(actorId: number): number {
+    const targets = priorityLists.get(actorId);
+    if (!targets) {
+      return 0;
+    }
+    priorityLists.delete(actorId);
+    return targets.size;
+  }
+
   function clearPriorityFor(playerId: number): void {
-    for (const [actorId, targetId] of priorityPairs) {
-      if (actorId === playerId || targetId === playerId) {
-        priorityPairs.delete(actorId);
+    priorityLists.delete(playerId);
+    for (const [actorId, targets] of priorityLists) {
+      targets.delete(playerId);
+      if (targets.size === 0) {
+        priorityLists.delete(actorId);
       }
     }
   }
 
   function priorityUnits(playerIds: number[]): number[][] {
-    const remaining = new Set(playerIds);
+    const present = new Set(playerIds);
+    const assigned = new Set<number>();
     const units: number[][] = [];
 
-    for (const [actorId, targetId] of priorityPairs) {
-      if (remaining.has(actorId) && remaining.has(targetId)) {
-        remaining.delete(actorId);
-        remaining.delete(targetId);
-        units.push([actorId, targetId]);
-      }
-    }
-
     for (const playerId of playerIds) {
-      if (remaining.has(playerId)) {
-        units.push([playerId]);
+      if (assigned.has(playerId)) {
+        continue;
       }
+      const unit = [...priorityGroup(playerId)].filter(
+        (memberId) => present.has(memberId) && !assigned.has(memberId)
+      );
+      for (const memberId of unit) {
+        assigned.add(memberId);
+      }
+      units.push(unit);
     }
 
     return units;
@@ -259,9 +330,14 @@ export default function setupMatch(
     let blueCount = blue;
 
     for (const playerId of playerIds) {
-      const teamId =
-        (redCount === blueCount ? priorityPartnerTeam(playerId) : null) ??
-        pickTeamForPlayer(redCount, blueCount);
+      let teamId = pickTeamForPlayer(redCount, blueCount);
+      const preferred = priorityPreferredTeam(playerId);
+      if (
+        (preferred === TEAM.RED && redCount <= blueCount) ||
+        (preferred === TEAM.BLUE && blueCount <= redCount)
+      ) {
+        teamId = preferred;
+      }
       moveToTeam(playerId, teamId);
       initAfkTracking(playerId);
       if (teamId === TEAM.RED) {
@@ -321,21 +397,29 @@ export default function setupMatch(
   }
 
   function reshuffleFieldTeams(): void {
-    const units = shuffleInPlace(priorityUnits([...fieldHistory]));
+    const fieldIds = [...fieldHistory];
+    const teamCapacity = Math.ceil(fieldIds.length / 2);
+    const units = shuffleInPlace(priorityUnits(fieldIds));
     units.sort((a, b) => b.length - a.length);
 
     let redCount = 0;
     let blueCount = 0;
 
     for (const unit of units) {
-      const teamId = pickTeamForPlayer(redCount, blueCount);
+      const primaryTeam = pickTeamForPlayer(redCount, blueCount);
       for (const playerId of unit) {
+        let teamId = primaryTeam;
+        if (teamId === TEAM.RED && redCount >= teamCapacity) {
+          teamId = TEAM.BLUE;
+        } else if (teamId === TEAM.BLUE && blueCount >= teamCapacity) {
+          teamId = TEAM.RED;
+        }
         moveToTeam(playerId, teamId);
-      }
-      if (teamId === TEAM.RED) {
-        redCount += unit.length;
-      } else {
-        blueCount += unit.length;
+        if (teamId === TEAM.RED) {
+          redCount += 1;
+        } else {
+          blueCount += 1;
+        }
       }
     }
   }
@@ -471,6 +555,15 @@ export default function setupMatch(
       return;
     }
     announce(t("match.kickoff"), 0x44ff44);
+    const minutes = timeLimits[currentMap];
+    if (minutes > 0) {
+      announce(
+        t("match.duration", { minutes: String(minutes) }),
+        0x44ff44
+      );
+    } else {
+      announce(t("match.durationUnlimited"), 0x44ff44);
+    }
     room.startGame();
   }
 
@@ -525,6 +618,7 @@ export default function setupMatch(
     }
 
     room.setCurrentStadium(stadiums[mapKey]);
+    room.setTimeLimit(timeLimits[mapKey]);
     currentMap = mapKey;
 
     announce(t("match.mapChanged", { map: mapLabel(mapKey) }), 0x44aaff);
@@ -536,12 +630,11 @@ export default function setupMatch(
   }
 
   function syncPendingMap(): void {
-    const target = desiredMapKey(fieldHistory.length);
+    const target = desiredMapKey(availablePlayerCount(), currentMap);
 
     if (target === currentMap) {
       pendingMap = null;
       mapChangeAnnounced = false;
-      readyForMapChange = false;
       return;
     }
 
@@ -559,14 +652,15 @@ export default function setupMatch(
   }
 
   function tryApplyPendingMap(): boolean {
-    if (!pendingMap || pendingMap === currentMap) {
+    const target = desiredMapKey(availablePlayerCount(), currentMap);
+    if (target === currentMap) {
       pendingMap = null;
       mapChangeAnnounced = false;
       readyForMapChange = false;
       return false;
     }
 
-    applyStadium(pendingMap);
+    applyStadium(target);
     return true;
   }
 
@@ -669,6 +763,11 @@ export default function setupMatch(
     });
     moveToTeam(player.id, TEAM.SPECTATORS);
     announce(t("match.playerJoined", { name: player.name }), 0xffffff);
+    announceTo(
+      player.id,
+      t("match.welcome", { name: player.name }),
+      0x44ff44
+    );
     syncRoster();
   };
 
@@ -697,6 +796,8 @@ export default function setupMatch(
     toggleMute,
     isMuted,
     togglePriority,
+    getPriorityList,
+    clearPriorityList,
   });
 
   room.onPlayerInputChange = (playerId) => {
@@ -717,11 +818,16 @@ export default function setupMatch(
     resetAfkForField();
   };
 
+  room.onKickOff = () => {
+    resetAfkForField();
+  };
+
   room.onPositionsReset = () => {
     resetAfkForField();
-    if (!readyForMapChange || !pendingMap || internalAction) {
+    if (!readyForMapChange || internalAction) {
       return;
     }
+    readyForMapChange = false;
     tryApplyPendingMap();
   };
 
@@ -731,7 +837,10 @@ export default function setupMatch(
       return;
     }
 
-    if (gameState.paused) {
+    if (
+      gameState.paused ||
+      gameState.state !== GAME_PLAY_STATE.Playing
+    ) {
       resetAfkForField();
       return;
     }
@@ -795,12 +904,11 @@ export default function setupMatch(
   };
 
   room.onTeamGoal = () => {
-    if (pendingMap) {
-      readyForMapChange = true;
-    }
+    readyForMapChange = true;
   };
 
   room.onGameEnd = () => {
+    resetAfkForField();
     if (internalAction) {
       return;
     }
@@ -814,11 +922,7 @@ export default function setupMatch(
       return;
     }
 
-    if (pendingMap && pendingMap !== currentMap) {
-      tryApplyPendingMap();
-      return;
-    }
-
+    syncPendingMap();
     ensureGameState();
   };
 }

@@ -2161,6 +2161,116 @@
   ],
   "discs": [
     {
+      "pos": [
+        0,
+        0
+      ],
+      "radius": 6.4,
+      "color": "FFFFFF",
+      "cMask": [
+        "all"
+      ],
+      "cGroup": [
+        "ball",
+        "kick",
+        "score"
+      ],
+      "bCoef": 0.4,
+      "invMass": 1.5,
+      "damping": 0.99
+    },
+    {
+      "pos": [
+        -5.2,
+        -1.6
+      ],
+      "radius": 0.64,
+      "color": "000000",
+      "cGroup": [
+        "c0"
+      ],
+      "invMass": 1e+250,
+      "damping": 0.99
+    },
+    {
+      "pos": [
+        0,
+        0
+      ],
+      "radius": 1.84,
+      "color": "000000",
+      "cGroup": [
+        "c0"
+      ],
+      "invMass": 1e+250,
+      "damping": 0.99
+    },
+    {
+      "pos": [
+        5.2,
+        -1.6
+      ],
+      "radius": 0.64,
+      "color": "000000",
+      "cGroup": [
+        "c0"
+      ],
+      "invMass": 1e+250,
+      "damping": 0.99
+    },
+    {
+      "pos": [
+        0.0,
+        -5.2
+      ],
+      "radius": 0.64,
+      "color": "000000",
+      "cGroup": [
+        "c0"
+      ],
+      "invMass": 1e+250,
+      "damping": 0.99
+    },
+    {
+      "pos": [
+        -3.2,
+        4.0
+      ],
+      "radius": 0.64,
+      "color": "000000",
+      "cGroup": [
+        "c0"
+      ],
+      "invMass": 1e+250,
+      "damping": 0.99
+    },
+    {
+      "pos": [
+        3.2,
+        4.0
+      ],
+      "radius": 0.64,
+      "color": "000000",
+      "cGroup": [
+        "c0"
+      ],
+      "invMass": 1e+250,
+      "damping": 0.99
+    },
+    {
+      "pos": [
+        0,
+        0
+      ],
+      "radius": 7.2,
+      "color": "transparent",
+      "cGroup": [
+        "c0"
+      ],
+      "invMass": 1e+250,
+      "damping": 0.99
+    },
+    {
       "radius": 5,
       "pos": [
         -950,
@@ -2356,11 +2466,146 @@
     "kickingAcceleration": 0.083,
     "kickStrength": 5
   },
-  "ballPhysics": {
-    "radius": 6.4,
-    "bCoef": 0.4,
-    "invMass": 1.5,
-    "damping": 0.99,
-    "color": "FFCC00"
-  }
+  "ballPhysics": "disc0",
+  "kickOffReset": "full",
+  "joints": [
+    {
+      "d0": 0,
+      "d1": 2,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 0,
+      "d1": 1,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 0,
+      "d1": 3,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 0,
+      "d1": 4,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 0,
+      "d1": 5,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 0,
+      "d1": 6,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 1,
+      "d1": 2,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 2,
+      "d1": 3,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 2,
+      "d1": 4,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 2,
+      "d1": 5,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 2,
+      "d1": 6,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 1,
+      "d1": 4,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 1,
+      "d1": 5,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 5,
+      "d1": 6,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 3,
+      "d1": 6,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 3,
+      "d1": 4,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 3,
+      "d1": 5,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 4,
+      "d1": 5,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 4,
+      "d1": 6,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 1,
+      "d1": 6,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 1,
+      "d1": 3,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 0,
+      "d1": 7,
+      "strength": "rigid",
+      "color": "transparent"
+    },
+    {
+      "d0": 2,
+      "d1": 7,
+      "strength": "rigid",
+      "color": "transparent"
+    }
+  ]
 }

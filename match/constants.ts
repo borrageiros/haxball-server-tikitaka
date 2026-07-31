@@ -14,7 +14,16 @@ export const TEAM_CHAT_COLOR: Record<TeamId, number> = {
 
 export const DEFAULT_MAP_SWITCH_TO_BIG_PLAYERS = 8;
 export const DEFAULT_MAP_SWITCH_TO_SMALL_MAX_PLAYERS = 6;
+export const DEFAULT_SMALL_MAP_TIME_LIMIT = 3;
+export const DEFAULT_BIG_MAP_TIME_LIMIT = 5;
 export const MATCH_COUNTDOWN_SECONDS = 3;
 export const AFK_MOVE_EPSILON = 0.05;
+
+export const GAME_PLAY_STATE = {
+  BeforeKickOff: 0,
+  Playing: 1,
+  AfterGoal: 2,
+  Ending: 3,
+} as const;
 
 export type MapKey = "small" | "big";

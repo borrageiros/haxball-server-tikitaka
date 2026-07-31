@@ -1,8 +1,10 @@
 import path from "path";
 import dotenv from "dotenv";
 import {
+  DEFAULT_BIG_MAP_TIME_LIMIT,
   DEFAULT_MAP_SWITCH_TO_BIG_PLAYERS,
   DEFAULT_MAP_SWITCH_TO_SMALL_MAX_PLAYERS,
+  DEFAULT_SMALL_MAP_TIME_LIMIT,
 } from "../match/constants";
 
 const rootDir = process.cwd();
@@ -27,6 +29,10 @@ function toBool(value: string | undefined, fallback: boolean): boolean {
 function toNumber(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function toTimeLimit(value: string | undefined, fallback: number): number {
+  return Math.max(0, Math.min(99, Math.floor(toNumber(value, fallback))));
 }
 
 export type FillMode = "pairs" | "instant";
@@ -58,6 +64,8 @@ export interface Config {
   hostAvatar: string;
   smallMapFile: string;
   bigMapFile: string;
+  smallMapTimeLimit: number;
+  bigMapTimeLimit: number;
   mapsDir: string;
   language: string;
   localesDir: string;
@@ -92,6 +100,14 @@ const config: Config = {
   hostAvatar: process.env.HOST_AVATAR || "⚽",
   smallMapFile: process.env.SMALL_MAP_FILE || "small-map.json",
   bigMapFile: process.env.BIG_MAP_FILE || "big-map.json",
+  smallMapTimeLimit: toTimeLimit(
+    process.env.SMALL_MAP_TIME_LIMIT,
+    DEFAULT_SMALL_MAP_TIME_LIMIT
+  ),
+  bigMapTimeLimit: toTimeLimit(
+    process.env.BIG_MAP_TIME_LIMIT,
+    DEFAULT_BIG_MAP_TIME_LIMIT
+  ),
   mapsDir: path.join(rootDir, "maps"),
   language: (process.env.LANGUAGE || "es").trim().toLowerCase() || "es",
   localesDir: path.join(rootDir, "locales"),

@@ -11,10 +11,11 @@ Headless HaxBall room server built with [node-haxball](https://github.com/wxyz-a
 - Dynamic small/big map switching on natural pauses (score resets)
 - Chat command system (`!command`)
 - Player chat shown in team colors (red / blue / white for spectators)
+- Custom kits (red-black-red vertical / blue-over-white horizontal) and classic black-and-white ball on both maps
 - Admin access with `!admin <password>` using `ADMIN_PASSWORD`
 - Hidden sub-admin access with `!subadmin <password>` using `SUBADMIN_PASSWORD` (no visible room admin)
 - Moderation commands `!kick` and `!mute` for room admins and sub-admins
-- Hidden team priority with `!priority` (moderators can pair themselves with another player onto the same team; reversible)
+- Hidden team priority with `!priority` (moderators keep a per-moderator list of players who are placed on their team; supports `list` and `clear`)
 - Voluntary AFK with `!afk` (hold queue spot as spectator without playing)
 - Queue position with `!queue` and automatic private notifications when the position changes
 - Command list with `!help` (private message); moderators also see the hidden commands
@@ -87,7 +88,8 @@ When the room opens, the console prints the room link.
 ├── locales/              # Translation files (es.json, en.json)
 ├── maps/                 # Stadium JSON files
 │   ├── small-map.json    # 3vs3 stadium
-│   └── big-map.json      # Large stadium (4vs4+)
+│   ├── big-map.json      # Large stadium (4vs4+)
+│   └── credit-by-borrageiros.json  # Optional map credit stamp (not loaded)
 ├── .env.example          # Documented environment variables
 └── Dockerfile
 ```
@@ -98,14 +100,16 @@ These rules are enforced automatically by `match/setupMatch.ts`. There is no man
 
 ### Maps
 
-| Map | File env | Used when |
-| --- | --- | --- |
-| Small (3vs3 stadium) | `SMALL_MAP_FILE` | Total on-field players are `<= MAP_SWITCH_TO_SMALL_MAX_PLAYERS` (default: 6) |
-| Big (large stadium) | `BIG_MAP_FILE` | Total on-field players are `>= MAP_SWITCH_TO_BIG_PLAYERS` (default: 8) |
+| Map | File env | Time limit env | Used when |
+| --- | --- | --- | --- |
+| Small (3vs3 stadium) | `SMALL_MAP_FILE` | `SMALL_MAP_TIME_LIMIT` (default: 3 min) | Non-AFK connected players are `<= MAP_SWITCH_TO_SMALL_MAX_PLAYERS` (default: 6) |
+| Big (large stadium) | `BIG_MAP_FILE` | `BIG_MAP_TIME_LIMIT` (default: 5 min) | Non-AFK connected players are `>= MAP_SWITCH_TO_BIG_PLAYERS` (default: 8) |
+| Current map kept | — | — | Between those thresholds (default: 7 players) |
 
 ### Connection queue
 
 - Every join is appended to a **connection queue** (oldest first).
+- On join, the player receives a **private welcome message** pointing them to `!help`.
 - Each queue entry is an object `{ id, name, afk, admin }`:
   - `id` — player id
   - `name` — player display name at join time
@@ -146,6 +150,7 @@ In both modes, mid-game promotions do **not** stop the match.
 ### Kickoff countdown
 
 - Before every kickoff (first start, rematch after a finished game, or restart after a map change), the room announces a **3-second countdown**, then starts.
+- At kickoff the room also announces the match duration for the current map (`SMALL_MAP_TIME_LIMIT` / `BIG_MAP_TIME_LIMIT`; `0` = unlimited).
 - The countdown is cancelled if there are no longer enough players for a 1vs1.
 - Join/leave updates the roster and can schedule a start when the lobby is idle; **end of match also schedules a start on its own** (no join/leave required).
 
@@ -163,7 +168,8 @@ There are two separate AFK behaviours:
 
 #### Inactivity kick (automatic)
 
-- During a live (unpaused) match, if an on-field player shows no activity for `AFK_TIMEOUT_MS` (default **10000** ms), they are **kicked from the room**.
+- During a live match in the **Playing** state (after kickoff, not paused), if an on-field player shows no activity for `AFK_TIMEOUT_MS` (default **10000** ms), they are **kicked from the room**.
+- AFK is **not** checked during kickoff wait, after a goal, during the victory screen (~5s after the match ends), or while the game is paused. Timers reset when those phases begin.
 - Activity includes movement, keyboard/input changes, typing (chat indicator), and sending chat messages.
 - At **half** of that timeout, the player receives a **private countdown** warning (only they see it), updated each second until kick or activity.
 - The room announces `{name} ha sido expulsado por inactividad` (or the English equivalent) when the kick happens.
@@ -187,11 +193,12 @@ There are two separate AFK behaviours:
 
 ### Map switching
 
-- The map target is computed from the **total on-field players**.
-- The room targets the **big** map only at `MAP_SWITCH_TO_BIG_PLAYERS` or above (default `8`, true **4vs4**).
+- The map target is computed from **connected non-AFK players** (voluntary `!afk` does not count).
+- The room targets the **big** map at `MAP_SWITCH_TO_BIG_PLAYERS` or above (default `8`, true **4vs4**).
 - The room targets the **small** map at `MAP_SWITCH_TO_SMALL_MAX_PLAYERS` or below (default `6`).
-- With default thresholds, **7 players (4vs3)** stay on the **small** map.
-- If a game is in progress, the stadium change is **queued** and applied on the next **natural pause** (after a goal, on positions reset). There is no forced mid-play freeze.
+- Between those thresholds (default **7**), the room **keeps the current map** (hysteresis), so dropping from 8 to 7 does not immediately leave the big map.
+- If a game is in progress, a map change is announced when the count crosses a threshold and applied on the next **goal** (on positions reset). **Every goal rechecks** the current non-AFK count and switches if needed — including when players joined or left after the previous announcement.
+- When a match stops, the target map is **recomputed** again before the rematch countdown.
 - After the stadium swap the **score resets** (new kickoff on the new map).
 - If no game is running, the map changes immediately.
 
@@ -200,7 +207,7 @@ There are two separate AFK behaviours:
 - There is **no pick/choose system**.
 - When a match ends, players still eligible by the connection queue stay on the field.
 - Those players are **randomly reassigned** between red and blue (still balanced) as soon as the match ends.
-- If a moderator set a **team priority pair** (`!priority`), both players of the pair are kept on the **same team** during the reshuffle; everyone else stays random and teams stay balanced.
+- If moderators set **team priority lists** (`!priority`), each moderator and the players on their list form a **group** that is kept on the same team during the reshuffle; everyone else stays random. Groups from different moderators that share a player are merged into one. If a group does not fit into one team, the overflow players are moved to the other team so teams always stay balanced (difference of at most 1 player).
 - After the engine finishes the victory pause (~5s) and the game fully stops, a new countdown starts automatically (no player join/leave needed).
 - If a map change is pending at that point, the stadium is applied first and then the countdown runs.
 
@@ -224,12 +231,14 @@ Important variables:
 | `SUBADMIN_PASSWORD` | Password for hidden `!subadmin` |
 | `ROOM_PASSWORD` | Join password (empty = open room) |
 | `MAX_TEAM_SIZE` | Max players per team on the field (default `6`) |
-| `MAP_SWITCH_TO_BIG_PLAYERS` | Total on-field players required to switch to big map (default `8`) |
-| `MAP_SWITCH_TO_SMALL_MAX_PLAYERS` | Max total on-field players to use small map (default `6`) |
-| `AFK_TIMEOUT_MS` | Ms without activity (move/input/typing) before AFK kick (default `10000`) |
+| `MAP_SWITCH_TO_BIG_PLAYERS` | Non-AFK connected players required to switch to big map (default `8`) |
+| `MAP_SWITCH_TO_SMALL_MAX_PLAYERS` | Max non-AFK connected players to use small map (default `6`; in between keeps current map) |
+| `AFK_TIMEOUT_MS` | Ms without activity during live play before AFK kick (default `10000`) |
 | `FILL_MODE` | Field fill mode: `instant` (default) or `pairs` |
 | `SMALL_MAP_FILE` | Small stadium file inside `maps/` |
 | `BIG_MAP_FILE` | Big stadium file inside `maps/` |
+| `SMALL_MAP_TIME_LIMIT` | Match time limit in minutes for the small map (default `3`; `0` = unlimited) |
+| `BIG_MAP_TIME_LIMIT` | Match time limit in minutes for the big map (default `5`; `0` = unlimited) |
 | `LANGUAGE` | `es` or `en` |
 | `TOKEN` / `HAXBALL_TOKEN` | Headless token |
 | `GEO_LAT` / `GEO_LON` / `GEO_FLAG` | Room list location and flag |
@@ -254,7 +263,7 @@ These are omitted from `!help` for regular players. Moderation commands appear i
 | Command | Description |
 | --- | --- |
 | `!subadmin <password>` | Grants sub-admin (`admin: true` on the queue entry) if the password matches `SUBADMIN_PASSWORD`. Does **not** call `setPlayerAdmin`, so the player is not a visible room admin. Unlocks `!kick`, `!mute`, and `!priority`. |
-| `!priority <id or name>` | Room admins and sub-admins only. Pairs the caller with the target player so both land on the **same team** in every end-of-match reshuffle; everyone else stays random. Running it again with the same player disables it (reversible). The pair is also cleared when either player leaves the room. Non-moderators get the regular "unknown command" reply, so the command stays invisible to them. |
+| `!priority <id or name>` | Room admins and sub-admins only. Toggles the target player in the caller's **priority list**: players on the list land on the **same team** as the caller in every end-of-match reshuffle; everyone else stays random. Each moderator has an independent list; overlapping lists merge into one same-team group, and groups larger than a team are split to keep teams balanced. `!priority list` shows the caller's list and `!priority clear` empties it. Players who leave the room are removed from every list. Non-moderators get the regular "unknown command" reply, so the command stays invisible to them. |
 
 ### Adding a new command
 
@@ -352,6 +361,7 @@ The image includes compiled JS, `match/`, `maps/`, `locales/`, and `.env.example
 | `yarn build` | Compile TypeScript to `dist/` |
 | `yarn start` | Run compiled `dist/index.js` |
 | `./deploy.sh` | Docker build + print `docker run` with `.env` vars |
+| `node scripts/matchE2E.ts <roomId\|link>` | Join bots and verify roster/map switching edge cases against a live room |
 
 ## Development notes
 
