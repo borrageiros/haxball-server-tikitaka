@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tikitaka kits</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 24px;
+        padding: 32px 16px 48px;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background: radial-gradient(circle at 50% 0%, #1d3a24, #0d1a10 70%);
+        color: #eef3ee;
+      }
+
+      header {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        text-align: center;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 28px;
+        letter-spacing: 1px;
+      }
+
+      p {
+        margin: 0;
+        color: #a8b8aa;
+        font-size: 14px;
+      }
+
+      button {
+        padding: 12px 28px;
+        border: none;
+        border-radius: 8px;
+        background: #37b24d;
+        color: #fff;
+        font-size: 16px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s ease, transform 0.15s ease;
+      }
+
+      button:hover {
+        background: #2f9e44;
+        transform: translateY(-1px);
+      }
+
+      canvas {
+        max-width: 100%;
+        height: auto;
+        border-radius: 12px;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Tikitaka kits</h1>
+      <p>Every kit combination available on the server</p>
+      <button id="download">Download PNG</button>
+    </header>
+    <canvas id="board"></canvas>
+    <script>
+      const WHITE = 0xffffff;
+      const BLACK = 0x111111;
+      const RED = 0xff1e1e;
+      const BLUE = 0x1a6bff;
+
+      const KIT_STYLES = [
+        {
+          angle: 90,
+          buildColors: (teamColor, baseColor) => [teamColor, baseColor],
+        },
+        {
+          angle: 135,
+          buildColors: (teamColor, baseColor) => [
+            baseColor,
+            teamColor,
+            baseColor,
+          ],
+        },
+        {
+          angle: 180,
+          buildColors: (teamColor, baseColor) => [
+            baseColor,
+            teamColor,
+            baseColor,
+          ],
+        },
+      ];
+
+      function buildKit(style, teamColor, baseColor) {
+        return {
+          angle: style.angle,
+          textColor: baseColor === WHITE ? BLACK : WHITE,
+          colors: style.buildColors(teamColor, baseColor),
+        };
+      }
+
+      const BASES = [WHITE, BLACK];
+
+      const TEAMS = [
+        { name: "RED TEAM", color: RED, accent: "#ff5b5b" },
+        { name: "BLUE TEAM", color: BLUE, accent: "#5b93ff" },
+      ];
+
+      const hex = (color) => "#" + color.toString(16).padStart(6, "0");
+
+      const CELL_W = 140;
+      const CELL_H = 140;
+      const COLS = KIT_STYLES.length * BASES.length;
+      const MARGIN_X = 40;
+      const MARGIN_Y = 24;
+      const TEAM_LABEL_H = 48;
+      const SCALE = 2;
+
+      const width = MARGIN_X * 2 + COLS * CELL_W;
+      const height =
+        MARGIN_Y + TEAMS.length * (TEAM_LABEL_H + CELL_H) + MARGIN_Y;
+
+      const canvas = document.getElementById("board");
+      canvas.width = width * SCALE;
+      canvas.height = height * SCALE;
+      canvas.style.width = width + "px";
+
+      const ctx = canvas.getContext("2d");
+      ctx.scale(SCALE, SCALE);
+
+      function drawKitDisc(cx, cy, radius, kit) {
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate((kit.angle * Math.PI) / 180);
+        ctx.beginPath();
+        ctx.arc(0, 0, radius, 0, Math.PI * 2);
+        ctx.clip();
+        const stripeWidth = (radius * 2) / kit.colors.length;
+        kit.colors.forEach((color, i) => {
+          ctx.fillStyle = hex(color);
+          ctx.fillRect(
+            -radius + i * stripeWidth,
+            -radius,
+            stripeWidth + 1,
+            radius * 2
+          );
+        });
+        ctx.restore();
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "#111111";
+        ctx.stroke();
+
+        ctx.fillStyle = hex(kit.textColor);
+        ctx.font = "700 26px 'Segoe UI', system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("10", cx, cy + 1);
+      }
+
+      function render() {
+        ctx.fillStyle = "#0f1f13";
+        ctx.fillRect(0, 0, width, height);
+
+        TEAMS.forEach((team, teamIndex) => {
+          const rowTop = MARGIN_Y + teamIndex * (TEAM_LABEL_H + CELL_H);
+
+          ctx.fillStyle = team.accent;
+          ctx.font = "700 20px 'Segoe UI', system-ui, sans-serif";
+          ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
+          ctx.fillText(team.name, MARGIN_X, rowTop + TEAM_LABEL_H / 2);
+
+          BASES.forEach((baseColor, baseIndex) => {
+            KIT_STYLES.forEach((style, styleIndex) => {
+              const col = baseIndex * KIT_STYLES.length + styleIndex;
+              const cellX = MARGIN_X + col * CELL_W;
+              const cx = cellX + CELL_W / 2;
+              const cy = rowTop + TEAM_LABEL_H + CELL_H / 2;
+              const kit = buildKit(style, team.color, baseColor);
+
+              drawKitDisc(cx, cy, 52, kit);
+            });
+          });
+        });
+      }
+
+      render();
+
+      document.getElementById("download").addEventListener("click", () => {
+        const link = document.createElement("a");
+        link.download = "tikitaka-kits.png";
+        link.href = canvas.toDataURL("image/png");
+        link.click();
+      });
+    </script>
+  </body>
+</html>

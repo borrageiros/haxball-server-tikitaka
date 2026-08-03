@@ -1,9 +1,11 @@
 import path from "path";
 import dotenv from "dotenv";
 import {
+  DEFAULT_BIG_MAP_SCORE_LIMIT,
   DEFAULT_BIG_MAP_TIME_LIMIT,
   DEFAULT_MAP_SWITCH_TO_BIG_PLAYERS,
   DEFAULT_MAP_SWITCH_TO_SMALL_MAX_PLAYERS,
+  DEFAULT_SMALL_MAP_SCORE_LIMIT,
   DEFAULT_SMALL_MAP_TIME_LIMIT,
 } from "../match/constants";
 
@@ -31,7 +33,7 @@ function toNumber(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function toTimeLimit(value: string | undefined, fallback: number): number {
+function toMatchLimit(value: string | undefined, fallback: number): number {
   return Math.max(0, Math.min(99, Math.floor(toNumber(value, fallback))));
 }
 
@@ -66,12 +68,17 @@ export interface Config {
   bigMapFile: string;
   smallMapTimeLimit: number;
   bigMapTimeLimit: number;
+  smallMapScoreLimit: number;
+  bigMapScoreLimit: number;
   mapsDir: string;
   language: string;
   localesDir: string;
   geo: GeoConfig;
   tokenUrl: string;
   token: string;
+  discordBotToken: string;
+  discordChatChannelId: string;
+  discordLogsChannelId: string;
 }
 
 const config: Config = {
@@ -100,13 +107,21 @@ const config: Config = {
   hostAvatar: process.env.HOST_AVATAR || "⚽",
   smallMapFile: process.env.SMALL_MAP_FILE || "small-map.json",
   bigMapFile: process.env.BIG_MAP_FILE || "big-map.json",
-  smallMapTimeLimit: toTimeLimit(
+  smallMapTimeLimit: toMatchLimit(
     process.env.SMALL_MAP_TIME_LIMIT,
     DEFAULT_SMALL_MAP_TIME_LIMIT
   ),
-  bigMapTimeLimit: toTimeLimit(
+  bigMapTimeLimit: toMatchLimit(
     process.env.BIG_MAP_TIME_LIMIT,
     DEFAULT_BIG_MAP_TIME_LIMIT
+  ),
+  smallMapScoreLimit: toMatchLimit(
+    process.env.SMALL_MAP_SCORE_LIMIT,
+    DEFAULT_SMALL_MAP_SCORE_LIMIT
+  ),
+  bigMapScoreLimit: toMatchLimit(
+    process.env.BIG_MAP_SCORE_LIMIT,
+    DEFAULT_BIG_MAP_SCORE_LIMIT
   ),
   mapsDir: path.join(rootDir, "maps"),
   language: (process.env.LANGUAGE || "es").trim().toLowerCase() || "es",
@@ -118,6 +133,9 @@ const config: Config = {
   },
   tokenUrl: process.env.TOKEN_URL || "https://www.haxball.com/headlesstoken",
   token: (process.env.TOKEN || process.env.HAXBALL_TOKEN || "").trim(),
+  discordBotToken: (process.env.DISCORD_BOT_TOKEN || "").trim(),
+  discordChatChannelId: (process.env.DISCORD_CHAT_CHANNEL_ID || "").trim(),
+  discordLogsChannelId: (process.env.DISCORD_LOGS_CHANNEL_ID || "").trim(),
 };
 
 export default config;

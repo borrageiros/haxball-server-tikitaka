@@ -4,8 +4,8 @@ import type { Command, Room } from "./types";
 import { canModerate, resolvePlayerId } from "./moderation";
 
 function sendPriorityList(room: Room, playerId: number): void {
-  const targetIds = getMatchControls().getPriorityList(playerId);
-  if (targetIds.length === 0) {
+  const entries = getMatchControls().getPriorityList(playerId);
+  if (entries.length === 0) {
     room.sendAnnouncement(
       t("priority.listEmpty"),
       playerId,
@@ -15,8 +15,10 @@ function sendPriorityList(room: Room, playerId: number): void {
     );
     return;
   }
-  const names = targetIds
-    .map((targetId) => room.getPlayer(targetId)?.name ?? String(targetId))
+  const names = entries
+    .map((entry) =>
+      entry.name ?? t("priority.offlineEntry", { auth: entry.auth.slice(0, 6) })
+    )
     .join(", ");
   room.sendAnnouncement(
     t("priority.list", { names }),
@@ -84,6 +86,10 @@ const priorityCommand: Command = {
     const enabled = getMatchControls().togglePriority(playerId, targetId);
     if (enabled == null) {
       room.sendAnnouncement(t("mod.notFound"), playerId, 0xff4444, "bold", 1);
+      return;
+    }
+    if (enabled === "noAuth") {
+      room.sendAnnouncement(t("priority.noAuth"), playerId, 0xff4444, "bold", 1);
       return;
     }
 

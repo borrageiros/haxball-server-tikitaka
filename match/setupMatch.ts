@@ -8,7 +8,10 @@ import {
   AFK_MOVE_EPSILON,
   GAME_PLAY_STATE,
   MATCH_COUNTDOWN_SECONDS,
+  MATCH_START_WATCHDOG_INTERVAL_MS,
   TEAM,
+  TYPING_BALL_AFK_MS,
+  TYPING_BALL_TOUCH_COOLDOWN_MS,
   type MapKey,
   type TeamId,
 } from "./constants";
@@ -19,7 +22,15 @@ import {
   shuffleInPlace,
 } from "./helpers";
 import { bindMatchControls } from "./controls";
-import type { QueueEntry, QueueStatus } from "./types";
+import { setDiscordPlayerCount } from "../discord";
+import { applyRandomMatchKits } from "./kits";
+import createMatchStats from "./stats";
+import type {
+  BanEntry,
+  PriorityListEntry,
+  QueueEntry,
+  QueueStatus,
+} from "./types";
 
 type HaxballAPI = ReturnType<typeof createHaxball>;
 type HaxballUtils = HaxballAPI["Utils"];
@@ -38,6 +49,10 @@ export default function setupMatch(
     small: config.smallMapTimeLimit,
     big: config.bigMapTimeLimit,
   };
+  const scoreLimits: Record<MapKey, number> = {
+    small: config.smallMapScoreLimit,
+    big: config.bigMapScoreLimit,
+  };
 
   const instantFill = config.fillMode === "instant";
   const minFieldPlayers = instantFill ? 1 : 2;
@@ -45,11 +60,19 @@ export default function setupMatch(
   const connectionQueue: QueueEntry[] = [];
   const fieldHistory: number[] = [];
   const mutedPlayers = new Set<number>();
-  const priorityLists = new Map<number, Set<number>>();
+  const subAdmins = new Set<string>();
+  const mutedAuths = new Set<string>();
+  const bannedAuths = new Map<string, string>();
+  const priorityByAuth = new Map<string, Set<string>>();
+  const authToPlayerId = new Map<string, number>();
   const lastActiveAt = new Map<number, number>();
   const lastPos = new Map<number, { x: number; y: number }>();
   const afkWarnedSec = new Map<number, number>();
   const lastQueuePosition = new Map<number, number>();
+  const typingPlayers = new Set<number>();
+  const typingBallWarned = new Set<number>();
+  const typingBallCooldownUntil = new Map<number, number>();
+  const typingAfkTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
   let currentMap: MapKey = "small";
   let pendingMap: MapKey | null = null;
@@ -57,29 +80,13 @@ export default function setupMatch(
   let readyForMapChange = false;
   let internalAction = false;
   let countdownTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function applyTeamColors(): void {
-    room.setTeamColors(
-      TEAM.RED,
-      0,
-      0xffffff,
-      0xff1e1e,
-      0x111111,
-      0xff1e1e
-    );
-    room.setTeamColors(
-      TEAM.BLUE,
-      90,
-      0x0a0a0a,
-      0x1a6bff,
-      0xffffff
-    );
-  }
+  let pendingReshuffle = false;
 
   room.setCurrentStadium(stadiums.small);
   room.setTimeLimit(timeLimits.small);
+  room.setScoreLimit(scoreLimits.small);
   room.fakeSetTeamsLock(true, 0);
-  applyTeamColors();
+  applyRandomMatchKits(room);
 
   const previousOnOperationReceived = room.onOperationReceived;
 
@@ -121,6 +128,15 @@ export default function setupMatch(
       findQueueEntry(playerId)?.name ??
       String(playerId)
     );
+  }
+
+  const matchStats = createMatchStats(playerName);
+
+  function recordBallTouchBy(playerId: number): void {
+    const teamId = room.getPlayer(playerId)?.team.id;
+    if (teamId === TEAM.RED || teamId === TEAM.BLUE) {
+      matchStats.recordBallTouch(playerId, teamId);
+    }
   }
 
   function findQueueEntry(playerId: number): QueueEntry | undefined {
@@ -216,32 +232,51 @@ export default function setupMatch(
     room.setPlayerTeam(playerId, teamId);
   }
 
-  function priorityNeighbors(playerId: number): Set<number> {
-    const neighbors = new Set<number>();
-    const ownTargets = priorityLists.get(playerId);
+  function authOf(playerId: number): string | null {
+    return findQueueEntry(playerId)?.auth ?? null;
+  }
+
+  function authNeighbors(auth: string): Set<string> {
+    const neighbors = new Set<string>();
+    const ownTargets = priorityByAuth.get(auth);
     if (ownTargets) {
-      for (const targetId of ownTargets) {
-        neighbors.add(targetId);
+      for (const targetAuth of ownTargets) {
+        neighbors.add(targetAuth);
       }
     }
-    for (const [actorId, targets] of priorityLists) {
-      if (targets.has(playerId)) {
-        neighbors.add(actorId);
+    for (const [actorAuth, targets] of priorityByAuth) {
+      if (targets.has(auth)) {
+        neighbors.add(actorAuth);
       }
     }
     return neighbors;
   }
 
+  function priorityGroupAuths(auth: string): Set<string> {
+    const group = new Set<string>([auth]);
+    const pending = [auth];
+    while (pending.length > 0) {
+      const currentAuth = pending.pop()!;
+      for (const neighborAuth of authNeighbors(currentAuth)) {
+        if (!group.has(neighborAuth)) {
+          group.add(neighborAuth);
+          pending.push(neighborAuth);
+        }
+      }
+    }
+    return group;
+  }
+
   function priorityGroup(playerId: number): Set<number> {
     const group = new Set<number>([playerId]);
-    const pending = [playerId];
-    while (pending.length > 0) {
-      const currentId = pending.pop()!;
-      for (const neighborId of priorityNeighbors(currentId)) {
-        if (!group.has(neighborId)) {
-          group.add(neighborId);
-          pending.push(neighborId);
-        }
+    const auth = authOf(playerId);
+    if (!auth) {
+      return group;
+    }
+    for (const memberAuth of priorityGroupAuths(auth)) {
+      const memberId = authToPlayerId.get(memberAuth);
+      if (memberId != null) {
+        group.add(memberId);
       }
     }
     return group;
@@ -260,47 +295,58 @@ export default function setupMatch(
     return null;
   }
 
-  function togglePriority(actorId: number, targetId: number): boolean | null {
+  function togglePriority(
+    actorId: number,
+    targetId: number
+  ): boolean | "noAuth" | null {
     if (!room.getPlayer(targetId)) {
       return null;
     }
-    const targets = priorityLists.get(actorId);
-    if (targets?.has(targetId)) {
-      targets.delete(targetId);
+    const actorAuth = authOf(actorId);
+    const targetAuth = authOf(targetId);
+    if (!actorAuth || !targetAuth) {
+      return "noAuth";
+    }
+    const targets = priorityByAuth.get(actorAuth);
+    if (targets?.has(targetAuth)) {
+      targets.delete(targetAuth);
       if (targets.size === 0) {
-        priorityLists.delete(actorId);
+        priorityByAuth.delete(actorAuth);
       }
       return false;
     }
     if (targets) {
-      targets.add(targetId);
+      targets.add(targetAuth);
     } else {
-      priorityLists.set(actorId, new Set([targetId]));
+      priorityByAuth.set(actorAuth, new Set([targetAuth]));
     }
     return true;
   }
 
-  function getPriorityList(actorId: number): number[] {
-    return [...(priorityLists.get(actorId) ?? [])];
+  function getPriorityList(actorId: number): PriorityListEntry[] {
+    const actorAuth = authOf(actorId);
+    if (!actorAuth) {
+      return [];
+    }
+    return [...(priorityByAuth.get(actorAuth) ?? [])].map((targetAuth) => {
+      const targetId = authToPlayerId.get(targetAuth);
+      const name =
+        targetId != null ? room.getPlayer(targetId)?.name ?? null : null;
+      return { auth: targetAuth, name };
+    });
   }
 
   function clearPriorityList(actorId: number): number {
-    const targets = priorityLists.get(actorId);
+    const actorAuth = authOf(actorId);
+    if (!actorAuth) {
+      return 0;
+    }
+    const targets = priorityByAuth.get(actorAuth);
     if (!targets) {
       return 0;
     }
-    priorityLists.delete(actorId);
+    priorityByAuth.delete(actorAuth);
     return targets.size;
-  }
-
-  function clearPriorityFor(playerId: number): void {
-    priorityLists.delete(playerId);
-    for (const [actorId, targets] of priorityLists) {
-      targets.delete(playerId);
-      if (targets.size === 0) {
-        priorityLists.delete(actorId);
-      }
-    }
   }
 
   function priorityUnits(playerIds: number[]): number[][] {
@@ -330,7 +376,10 @@ export default function setupMatch(
     let blueCount = blue;
 
     for (const playerId of playerIds) {
-      let teamId = pickTeamForPlayer(redCount, blueCount);
+      let teamId =
+        redCount === 0 && blueCount === 0
+          ? TEAM.RED
+          : pickTeamForPlayer(redCount, blueCount);
       const preferred = priorityPreferredTeam(playerId);
       if (
         (preferred === TEAM.RED && redCount <= blueCount) ||
@@ -480,6 +529,9 @@ export default function setupMatch(
       return false;
     }
     entry.admin = true;
+    if (entry.auth) {
+      subAdmins.add(entry.auth);
+    }
     return true;
   }
 
@@ -488,8 +540,17 @@ export default function setupMatch(
   }
 
   function toggleMute(playerId: number): boolean | null {
-    if (!findQueueEntry(playerId) || !room.getPlayer(playerId)) {
+    const entry = findQueueEntry(playerId);
+    if (!entry || !room.getPlayer(playerId)) {
       return null;
+    }
+    if (entry.auth) {
+      if (mutedAuths.has(entry.auth)) {
+        mutedAuths.delete(entry.auth);
+        return false;
+      }
+      mutedAuths.add(entry.auth);
+      return true;
     }
     if (mutedPlayers.has(playerId)) {
       mutedPlayers.delete(playerId);
@@ -499,7 +560,59 @@ export default function setupMatch(
     return true;
   }
 
+  function banPlayer(targetId: number): boolean | "noAuth" | null {
+    const entry = findQueueEntry(targetId);
+    if (!entry || !room.getPlayer(targetId)) {
+      return null;
+    }
+    if (!entry.auth) {
+      return "noAuth";
+    }
+    bannedAuths.set(entry.auth, entry.name);
+    return true;
+  }
+
+  function getBanList(): BanEntry[] {
+    return [...bannedAuths].map(([auth, name]) => ({ auth, name }));
+  }
+
+  function unbanPlayer(query: string): BanEntry | "ambiguous" | null {
+    const lower = query.trim().toLowerCase();
+    if (!lower) {
+      return null;
+    }
+
+    const entries = getBanList();
+    const exact = entries.filter((entry) => entry.name.toLowerCase() === lower);
+    if (exact.length === 1) {
+      bannedAuths.delete(exact[0]!.auth);
+      return exact[0]!;
+    }
+    if (exact.length > 1) {
+      return "ambiguous";
+    }
+
+    const partial = entries.filter(
+      (entry) =>
+        entry.name.toLowerCase().includes(lower) ||
+        entry.auth.toLowerCase().startsWith(lower)
+    );
+    if (partial.length === 1) {
+      bannedAuths.delete(partial[0]!.auth);
+      return partial[0]!;
+    }
+    if (partial.length > 1) {
+      return "ambiguous";
+    }
+
+    return null;
+  }
+
   function isMuted(playerId: number): boolean {
+    const auth = authOf(playerId);
+    if (auth) {
+      return mutedAuths.has(auth);
+    }
     return mutedPlayers.has(playerId);
   }
 
@@ -542,6 +655,15 @@ export default function setupMatch(
     }
   }
 
+  function isMatchLive(): boolean {
+    const gameState = room.gameState;
+    return (
+      gameState != null &&
+      !gameState.paused &&
+      gameState.state === GAME_PLAY_STATE.Playing
+    );
+  }
+
   function canStartMatch(): boolean {
     return (
       currentDesiredFieldCount() >= minFieldPlayers &&
@@ -554,6 +676,7 @@ export default function setupMatch(
     if (!canStartMatch()) {
       return;
     }
+    applyRandomMatchKits(room);
     announce(t("match.kickoff"), 0x44ff44);
     const minutes = timeLimits[currentMap];
     if (minutes > 0) {
@@ -563,6 +686,12 @@ export default function setupMatch(
       );
     } else {
       announce(t("match.durationUnlimited"), 0x44ff44);
+    }
+    const goals = scoreLimits[currentMap];
+    if (goals > 0) {
+      announce(t("match.scoreLimit", { goals: String(goals) }), 0x44ff44);
+    } else {
+      announce(t("match.scoreLimitUnlimited"), 0x44ff44);
     }
     room.startGame();
   }
@@ -592,6 +721,11 @@ export default function setupMatch(
     if (countdownTimer != null || !canStartMatch()) {
       return;
     }
+    if (pendingReshuffle) {
+      pendingReshuffle = false;
+      reshuffleFieldTeams();
+      announce(t("match.teamsReshuffled"), 0x44aaff);
+    }
     tickCountdown(MATCH_COUNTDOWN_SECONDS);
   }
 
@@ -619,6 +753,7 @@ export default function setupMatch(
 
     room.setCurrentStadium(stadiums[mapKey]);
     room.setTimeLimit(timeLimits[mapKey]);
+    room.setScoreLimit(scoreLimits[mapKey]);
     currentMap = mapKey;
 
     announce(t("match.mapChanged", { map: mapLabel(mapKey) }), 0x44aaff);
@@ -683,7 +818,11 @@ export default function setupMatch(
   }
 
   function handleAfk(playerId: number): void {
-    if (!isOnField(playerId) || !room.getPlayer(playerId)) {
+    if (
+      !isMatchLive() ||
+      !isOnField(playerId) ||
+      !room.getPlayer(playerId)
+    ) {
       return;
     }
 
@@ -691,6 +830,82 @@ export default function setupMatch(
     const message = t("match.kickedAfk", { name });
     announce(message, 0xff4444);
     room.kickPlayer(playerId, message, false);
+  }
+
+  function clearTypingTracking(playerId: number): void {
+    typingPlayers.delete(playerId);
+    typingBallWarned.delete(playerId);
+    typingBallCooldownUntil.delete(playerId);
+    const timer = typingAfkTimers.get(playerId);
+    if (timer != null) {
+      clearTimeout(timer);
+      typingAfkTimers.delete(playerId);
+    }
+  }
+
+  function simulateAfkCommand(playerId: number): void {
+    const nextAfk = toggleAfk(playerId);
+    if (nextAfk == null) {
+      return;
+    }
+    announceTo(
+      playerId,
+      nextAfk ? t("afk.enabled") : t("afk.disabled"),
+      nextAfk ? 0xffcc00 : 0x44ff44,
+      1
+    );
+  }
+
+  function handleTypingBallTouch(playerId: number): void {
+    if (
+      !typingPlayers.has(playerId) ||
+      !isOnField(playerId) ||
+      !room.getPlayer(playerId)
+    ) {
+      return;
+    }
+
+    if (!isMatchLive()) {
+      return;
+    }
+
+    const now = Date.now();
+    const cooldownUntil = typingBallCooldownUntil.get(playerId) ?? 0;
+    if (now < cooldownUntil) {
+      return;
+    }
+
+    typingBallCooldownUntil.set(
+      playerId,
+      now + TYPING_BALL_TOUCH_COOLDOWN_MS
+    );
+
+    const name = playerName(playerId);
+
+    if (!typingBallWarned.has(playerId)) {
+      typingBallWarned.add(playerId);
+      announce(t("match.yellowCardTyping", { name }), 0xffcc00);
+      return;
+    }
+
+    typingBallWarned.delete(playerId);
+    announce(t("match.redCardTyping", { name }), 0xff4444);
+    simulateAfkCommand(playerId);
+
+    const existing = typingAfkTimers.get(playerId);
+    if (existing != null) {
+      clearTimeout(existing);
+    }
+    typingAfkTimers.set(
+      playerId,
+      setTimeout(() => {
+        typingAfkTimers.delete(playerId);
+        if (!room.getPlayer(playerId)) {
+          return;
+        }
+        simulateAfkCommand(playerId);
+      }, TYPING_BALL_AFK_MS)
+    );
   }
 
   function syncRoster(): void {
@@ -755,12 +970,29 @@ export default function setupMatch(
   }
 
   room.onPlayerJoin = (player) => {
+    const auth = player.auth ?? null;
+    if (auth && bannedAuths.has(auth)) {
+      bannedAuths.set(auth, player.name);
+      const bannedId = player.id;
+      setTimeout(() => {
+        if (!room.getPlayer(bannedId)) {
+          return;
+        }
+        room.kickPlayer(bannedId, t("ban.rejoinBlocked"), false);
+      }, 100);
+      return;
+    }
+    const restoredSubAdmin = auth != null && subAdmins.has(auth);
     connectionQueue.push({
       id: player.id,
       name: player.name,
       afk: false,
-      admin: false,
+      admin: restoredSubAdmin,
+      auth,
     });
+    if (auth) {
+      authToPlayerId.set(auth, player.id);
+    }
     moveToTeam(player.id, TEAM.SPECTATORS);
     announce(t("match.playerJoined", { name: player.name }), 0xffffff);
     announceTo(
@@ -768,11 +1000,19 @@ export default function setupMatch(
       t("match.welcome", { name: player.name }),
       0x44ff44
     );
+    if (restoredSubAdmin) {
+      announceTo(player.id, t("subadmin.restored"), 0x44ff44);
+    }
+    if (auth && mutedAuths.has(auth)) {
+      announceTo(player.id, t("mute.restored"), 0xffcc00);
+    }
+    setDiscordPlayerCount(connectionQueue.length);
     syncRoster();
   };
 
   room.onPlayerLeave = (player) => {
     const index = connectionQueue.findIndex((entry) => entry.id === player.id);
+    const entry = index >= 0 ? connectionQueue[index] : undefined;
     if (index >= 0) {
       connectionQueue.splice(index, 1);
     }
@@ -783,8 +1023,12 @@ export default function setupMatch(
     }
 
     clearAfkTracking(player.id);
+    clearTypingTracking(player.id);
     mutedPlayers.delete(player.id);
-    clearPriorityFor(player.id);
+    if (entry?.auth && authToPlayerId.get(entry.auth) === player.id) {
+      authToPlayerId.delete(entry.auth);
+    }
+    setDiscordPlayerCount(connectionQueue.length);
     syncRoster();
   };
 
@@ -798,6 +1042,9 @@ export default function setupMatch(
     togglePriority,
     getPriorityList,
     clearPriorityList,
+    banPlayer,
+    unbanPlayer,
+    getBanList,
   });
 
   room.onPlayerInputChange = (playerId) => {
@@ -810,12 +1057,39 @@ export default function setupMatch(
 
   room.onPlayerChatIndicatorChange = (playerId, typing) => {
     if (typing) {
+      typingPlayers.add(playerId);
       touchAfk(playerId);
+      return;
     }
+    typingPlayers.delete(playerId);
+  };
+
+  room.onCollisionDiscVsDisc = (
+    discId1,
+    discPlayerId1,
+    discId2,
+    discPlayerId2
+  ) => {
+    let playerId: number | null = null;
+    if (discId1 === 0 && discPlayerId2 != null) {
+      playerId = discPlayerId2;
+    } else if (discId2 === 0 && discPlayerId1 != null) {
+      playerId = discPlayerId1;
+    }
+    if (playerId == null) {
+      return;
+    }
+    recordBallTouchBy(playerId);
+    handleTypingBallTouch(playerId);
+  };
+
+  room.onPlayerBallKick = (playerId) => {
+    recordBallTouchBy(playerId);
   };
 
   room.onGameStart = () => {
     resetAfkForField();
+    matchStats.reset();
   };
 
   room.onKickOff = () => {
@@ -824,6 +1098,7 @@ export default function setupMatch(
 
   room.onPositionsReset = () => {
     resetAfkForField();
+    matchStats.clearBallTouch();
     if (!readyForMapChange || internalAction) {
       return;
     }
@@ -844,6 +1119,8 @@ export default function setupMatch(
       resetAfkForField();
       return;
     }
+
+    matchStats.trackPossessionTick();
 
     const now = Date.now();
     const epsilonSq = AFK_MOVE_EPSILON * AFK_MOVE_EPSILON;
@@ -903,8 +1180,11 @@ export default function setupMatch(
     }
   };
 
-  room.onTeamGoal = () => {
+  room.onTeamGoal = (teamId) => {
     readyForMapChange = true;
+    if (teamId === TEAM.RED || teamId === TEAM.BLUE) {
+      matchStats.recordGoal(teamId, room.gameState?.timeElapsed ?? 0);
+    }
   };
 
   room.onGameEnd = () => {
@@ -913,8 +1193,11 @@ export default function setupMatch(
       return;
     }
 
-    reshuffleFieldTeams();
-    announce(t("match.teamsReshuffled"), 0x44aaff);
+    for (const line of matchStats.buildSummary()) {
+      announce(line.message, line.color);
+    }
+
+    pendingReshuffle = true;
   };
 
   room.onGameStop = () => {
@@ -925,4 +1208,13 @@ export default function setupMatch(
     syncPendingMap();
     ensureGameState();
   };
+
+  setInterval(() => {
+    internalAction = false;
+    if (room.gameState != null || countdownTimer != null) {
+      return;
+    }
+    syncPendingMap();
+    ensureGameState();
+  }, MATCH_START_WATCHDOG_INTERVAL_MS);
 }

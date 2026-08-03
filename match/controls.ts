@@ -1,4 +1,4 @@
-import type { QueueStatus } from "./types";
+import type { BanEntry, PriorityListEntry, QueueStatus } from "./types";
 
 export interface MatchControls {
   toggleAfk: (playerId: number) => boolean | null;
@@ -7,9 +7,15 @@ export interface MatchControls {
   isSubAdmin: (playerId: number) => boolean;
   toggleMute: (playerId: number) => boolean | null;
   isMuted: (playerId: number) => boolean;
-  togglePriority: (actorId: number, targetId: number) => boolean | null;
-  getPriorityList: (actorId: number) => number[];
+  togglePriority: (
+    actorId: number,
+    targetId: number
+  ) => boolean | "noAuth" | null;
+  getPriorityList: (actorId: number) => PriorityListEntry[];
   clearPriorityList: (actorId: number) => number;
+  banPlayer: (targetId: number) => boolean | "noAuth" | null;
+  unbanPlayer: (query: string) => BanEntry | "ambiguous" | null;
+  getBanList: () => BanEntry[];
 }
 
 const matchControls: MatchControls = {
@@ -22,6 +28,9 @@ const matchControls: MatchControls = {
   togglePriority: () => null,
   getPriorityList: () => [],
   clearPriorityList: () => 0,
+  banPlayer: () => null,
+  unbanPlayer: () => null,
+  getBanList: () => [],
 };
 
 export function bindMatchControls(controls: MatchControls): void {
@@ -34,6 +43,9 @@ export function bindMatchControls(controls: MatchControls): void {
   matchControls.togglePriority = controls.togglePriority;
   matchControls.getPriorityList = controls.getPriorityList;
   matchControls.clearPriorityList = controls.clearPriorityList;
+  matchControls.banPlayer = controls.banPlayer;
+  matchControls.unbanPlayer = controls.unbanPlayer;
+  matchControls.getBanList = controls.getBanList;
 }
 
 export function getMatchControls(): MatchControls {

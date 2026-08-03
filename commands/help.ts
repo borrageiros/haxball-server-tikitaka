@@ -17,6 +17,8 @@ const helpCommand: Command = {
       lines.push(
         t("help.modHeader"),
         t("help.kick"),
+        t("help.ban"),
+        t("help.unban"),
         t("help.mute"),
         t("help.priority")
       );

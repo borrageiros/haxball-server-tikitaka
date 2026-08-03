@@ -1,14 +1,17 @@
 import type { ChatCustomData, Command, OperationTypeEnum, Room } from "./types";
 import adminCommand from "./admin";
 import afkCommand from "./afk";
+import banCommand from "./ban";
 import helpCommand from "./help";
 import kickCommand from "./kick";
 import muteCommand from "./mute";
 import priorityCommand from "./priority";
 import queueCommand from "./queue";
 import subadminCommand from "./subadmin";
+import unbanCommand from "./unban";
 import { getMatchControls } from "../match/controls";
 import { TEAM, TEAM_CHAT_COLOR, type TeamId } from "../match/constants";
+import { sendDiscordChatMessage } from "../discord";
 import t from "../utils/i18n";
 
 const commandList: Command[] = [
@@ -18,6 +21,8 @@ const commandList: Command[] = [
   adminCommand,
   subadminCommand,
   kickCommand,
+  banCommand,
+  unbanCommand,
   muteCommand,
   priorityCommand,
 ];
@@ -104,6 +109,7 @@ export default function setupCommands(
       "normal",
       1
     );
+    sendDiscordChatMessage(name, text);
     return true;
   };
 

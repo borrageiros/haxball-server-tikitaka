@@ -654,7 +654,10 @@
         "ball",
         "kick",
         "score"
-      ]
+      ],
+      "bCoef": 0.4,
+      "invMass": 1.5,
+      "damping": 0.99
     },
     {
       "pos": [
@@ -663,6 +666,7 @@
       ],
       "radius": 0.64,
       "color": "000000",
+      "cMask": [],
       "cGroup": [
         "c0"
       ],
@@ -676,6 +680,7 @@
       ],
       "radius": 1.84,
       "color": "000000",
+      "cMask": [],
       "cGroup": [
         "c0"
       ],
@@ -689,6 +694,7 @@
       ],
       "radius": 0.64,
       "color": "000000",
+      "cMask": [],
       "cGroup": [
         "c0"
       ],
@@ -702,6 +708,7 @@
       ],
       "radius": 0.64,
       "color": "000000",
+      "cMask": [],
       "cGroup": [
         "c0"
       ],
@@ -715,6 +722,7 @@
       ],
       "radius": 0.64,
       "color": "000000",
+      "cMask": [],
       "cGroup": [
         "c0"
       ],
@@ -728,19 +736,7 @@
       ],
       "radius": 0.64,
       "color": "000000",
-      "cGroup": [
-        "c0"
-      ],
-      "invMass": 1e+250,
-      "damping": 0.99
-    },
-    {
-      "pos": [
-        0,
-        0
-      ],
-      "radius": 7.2,
-      "color": "transparent",
+      "cMask": [],
       "cGroup": [
         "c0"
       ],
@@ -1024,18 +1020,6 @@
     {
       "d0": 1,
       "d1": 3,
-      "strength": "rigid",
-      "color": "transparent"
-    },
-    {
-      "d0": 0,
-      "d1": 7,
-      "strength": "rigid",
-      "color": "transparent"
-    },
-    {
-      "d0": 2,
-      "d1": 7,
       "strength": "rigid",
       "color": "transparent"
     }

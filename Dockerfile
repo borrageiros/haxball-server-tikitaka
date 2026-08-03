@@ -11,6 +11,7 @@ COPY tsconfig.json index.ts ./
 COPY utils ./utils/
 COPY commands ./commands/
 COPY match ./match/
+COPY discord ./discord/
 RUN yarn build
 
 FROM node:22-bookworm-slim
