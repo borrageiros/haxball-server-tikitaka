@@ -193,6 +193,7 @@ In both modes, mid-game promotions do **not** stop the match.
 - During live play (`Playing`, not paused), if an on-field player has the **chat input focused** (typing indicator) and their disc collides with the ball, they receive a **yellow card** announced globally.
 - A second collision under the same conditions triggers a **red card** announcement and simulates `!afk` twice: AFK is toggled on immediately, then toggled off again after `TYPING_BALL_AFK_MS` (5s), with the same private messages as the command.
 - Continuous contact is debounced (`TYPING_BALL_TOUCH_COOLDOWN_MS`, 1s) so one prolonged touch does not fire yellow and red in the same frame burst; after the cooldown, another touch while still typing counts as the next offense.
+- After a yellow card, escalation is blocked for `TYPING_BALL_CARD_ESCALATION_DELAY_MS` (3s): further ball touches in that window are ignored, so a single prolonged contact detected as multiple collisions cannot turn straight into a red card.
 - The yellow warning resets after the red-card AFK is applied, so the cycle can start again.
 - The typing indicator is tracked via `onPlayerChatIndicatorChange`; warnings and pending AFK timers are cleared when the player leaves the room.
 - Closing the chat input before touching the ball avoids the penalty.

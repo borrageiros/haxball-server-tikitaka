@@ -11,6 +11,7 @@ import {
   MATCH_START_WATCHDOG_INTERVAL_MS,
   TEAM,
   TYPING_BALL_AFK_MS,
+  TYPING_BALL_CARD_ESCALATION_DELAY_MS,
   TYPING_BALL_TOUCH_COOLDOWN_MS,
   type MapKey,
   type TeamId,
@@ -884,6 +885,10 @@ export default function setupMatch(
 
     if (!typingBallWarned.has(playerId)) {
       typingBallWarned.add(playerId);
+      typingBallCooldownUntil.set(
+        playerId,
+        now + TYPING_BALL_CARD_ESCALATION_DELAY_MS
+      );
       announce(t("match.yellowCardTyping", { name }), 0xffcc00);
       return;
     }
